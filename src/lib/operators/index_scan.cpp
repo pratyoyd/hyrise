@@ -41,23 +41,12 @@ std::shared_ptr<const Table> IndexScan::_on_execute() {
   std::mutex output_mutex;
 
   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
-  if (included_chunk_ids.empty()) {
-    const auto chunk_count = _in_table->chunk_count();
-    jobs.reserve(chunk_count);
-    for (auto chunk_id = ChunkID{0u}; chunk_id < chunk_count; ++chunk_id) {
-      const auto chunk = _in_table->get_chunk(chunk_id);
-      Assert(chunk, "Physically deleted chunk should not reach this point, see get_chunk / #1686.");
-
-      jobs.push_back(_create_job(chunk_id, output_mutex));
-    }
-  } else {
     jobs.reserve(included_chunk_ids.size());
     for (const auto chunk_id : included_chunk_ids) {
       if (_in_table->get_chunk(chunk_id)) {
         jobs.push_back(_create_job(chunk_id, output_mutex));
       }
     }
-  }
 
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
 
