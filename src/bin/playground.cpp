@@ -8,6 +8,7 @@
 #include "operators/print.hpp"
 #include "operators/progressive/chunk_sink.hpp"
 #include "operators/progressive/progressive_map.hpp"
+#include "operators/progressive/shuffle.hpp"
 #include "operators/table_wrapper.hpp"
 #include "scheduler/abstract_task.hpp"
 #include "scheduler/job_task.hpp"
@@ -19,8 +20,9 @@
 #include "utils/timer.hpp"
 
 namespace hyrise {}  // namespace hyrise
+namespace hyrise {}  // namespace hyrise
 
-using namespace hyrise;                         // NOLINT(build/namespaces)
+using namespace hyrise;                                                // NOLINT(build/namespaces)
 using namespace hyrise::expression_functional;  // NOLINT(build/namespaces)
 
 int main() {
@@ -31,26 +33,29 @@ int main() {
   // constexpr auto SCALE_FACTOR = 5.0f;
   auto benchmark_config = BenchmarkConfig::get_default_config();
   TPCHTableGenerator(SCALE_FACTOR, ClusteringConfiguration::None, std::make_shared<BenchmarkConfig>(benchmark_config))
+  TPCHTableGenerator(SCALE_FACTOR, ClusteringConfiguration::None, std::make_shared<BenchmarkConfig>(benchmark_config))
       .generate_and_store();
 
   auto runs = size_t{0};
-  // while (runs < 1) {
   while (runs < 100'000) {
     ++runs;
     auto timer_query_start = Timer{};
 
     const auto& lineitem_table = Hyrise::get().storage_manager.get_table("lineitem");
     auto lineitem_wrapper = std::make_shared<TableWrapper>(lineitem_table);
-    lineitem_wrapper->execute();
     lineitem_wrapper->never_clear_output();
+    lineitem_wrapper->execute();
 
     auto initial_chunk_exchange = std::make_shared<ChunkSink>(lineitem_wrapper, SinkType::PipelineStart);
     initial_chunk_exchange->set_name("Initial_Sink");
     initial_chunk_exchange->never_clear_output();
-    auto scan1_scan2_exchange = std::make_shared<ChunkSink>(
-        lineitem_wrapper,
+    auto shuffle_scan1_exchange = std::make_shared<ChunkSink>(
+         lineitem_wrapper,
         SinkType::
             Forwarding);  // input op is actually only needed for initial sink, but currently interface needs "some random" operator.
+    shuffle_scan1_exchange->set_name("Shuffle_Scan1_Sink");
+    shuffle_scan1_exchange->never_clear_output();
+    auto scan1_scan2_exchange = std::make_shared<ChunkSink>(lineitem_wrapper, SinkType::Forwarding);
     scan1_scan2_exchange->set_name("Scan1_Scan2_Sink");
     scan1_scan2_exchange->never_clear_output();
     auto scan2_scan3_exchange = std::make_shared<ChunkSink>(lineitem_wrapper, SinkType::Forwarding);
@@ -80,6 +85,18 @@ int main() {
     // not just listen to all sinks and issue tasks?
 
     initial_chunk_exchange->execute();
+
+    //
+    // Shuffle
+    //
+    pipeline_jobs.emplace_back(std::make_shared<JobTask>([&]() {
+      auto shuffle = std::make_shared<Shuffle>(lineitem_wrapper, initial_chunk_exchange, shuffle_scan1_exchange, std::vector<ColumnID>{ColumnID{1}}, std::vector<size_t>{size_t{64}});
+      shuffle->never_clear_output();
+      shuffle->execute();
+    }));
+    pipeline_jobs.back()
+        ->schedule();  // As of now, we need to start this job immediately, otherwise we cannot "register"
+                       // the scan as a consumer of the initial_chunk_exchange as it is already executed.
 
     //
     // Table Scan #1
