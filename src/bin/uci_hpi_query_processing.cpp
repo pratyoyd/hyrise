@@ -12,7 +12,6 @@
 #include "all_type_variant.hpp"
 #include "expression/expression_functional.hpp"
 #include "hyrise.hpp"
-#include "hyrise.hpp"
 #include "import_export/csv/csv_meta.hpp"
 #include "import_export/csv/csv_parser.hpp"
 #include "operators/print.hpp"
@@ -22,7 +21,6 @@
 #include "scheduler/job_task.hpp"
 #include "scheduler/node_queue_scheduler.hpp"
 #include "storage/chunk_encoder.hpp"
-#include "storage/table.hpp"
 #include "storage/table.hpp"
 #include "types.hpp"
 #include "utils/load_table.hpp"
@@ -58,38 +56,11 @@ std::shared_ptr<Table> load_ny_taxi_data_to_table(std::string&& path) {
                                       {"Tip_Amt", "float", true},
                                       {"Tolls_Amt", "float", true},
                                       {"Total_Amt", "float", true}}};
-  auto csv_meta = CsvMeta{.config = ParseConfig{.null_handling = NullHandling::NullStringAsValue, .rfc_mode = false},
-                          .columns = {{"vendor_name", "string", true},
-                                      {"Trip_Pickup_DateTime", "string", true},
-                                      {"Trip_Dropoff_DateTime", "string", true},
-                                      {"Passenger_Count", "int", true},
-                                      {"Trip_Distance", "float", true},
-                                      {"Start_Lon", "float", true},
-                                      {"Start_Lat", "float", true},
-                                      {"Rate_Code", "string", true},
-                                      {"store_and_forward", "string", true},
-                                      {"End_Lon", "float", true},
-                                      {"End_Lat", "float", true},
-                                      {"Payment_Type", "string", true},
-                                      {"Fare_Amt", "float", true},
-                                      {"surcharge", "float", true},
-                                      {"mta_tax", "float", true},
-                                      {"Tip_Amt", "float", true},
-                                      {"Tolls_Amt", "float", true},
-                                      {"Total_Amt", "float", true}}};
-
-  // // We are working a bit around the CSV interface of Hyrise here to have some parallelization.
-  // auto table_column_definitions = TableColumnDefinitions{};
-  // for (const auto& column : csv_meta.columns) {
-  //   table_column_definitions.emplace_back(column.name, data_type_to_string.right.at(column.type), column.nullable);
-  // }
-
-  // auto table = std::make_shared<Table>(table_column_definitions, TableType::Data, Chunk::DEFAULT_SIZE);
 
   auto dir_iter = std::filesystem::directory_iterator("resources/progressive/" + path);
   const auto file_count =
      
-      static_cast<size_t>(std::distance(std::filesystem::begin(dir_iter), std::filesystem::end(dir_iter)));
+  static_cast<size_t>(std::distance(std::filesystem::begin(dir_iter), std::filesystem::end(dir_iter)));
   // We could write chunks directly to a merged table by each CSV job, but we'll collect them first to ensure the
   // "correct order".
   auto tables = std::vector<std::shared_ptr<Table>>(file_count);
@@ -146,25 +117,6 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const size_t row_count) {
                                       {"Tip_Amt", "float", true},
                                       {"Tolls_Amt", "float", true},
                                       {"Total_Amt", "float", true}}};
-  auto csv_meta = CsvMeta{.config = ParseConfig{.null_handling = NullHandling::NullStringAsValue, .rfc_mode = false},
-                          .columns = {{"vendor_name", "string", true},
-                                      {"Trip_Pickup_DateTime", "string", true},
-                                      {"Trip_Dropoff_DateTime", "string", true},
-                                      {"Passenger_Count", "int", true},
-                                      {"Trip_Distance", "float", true},
-                                      {"Start_Lon", "float", true},
-                                      {"Start_Lat", "float", true},
-                                      {"Rate_Code", "string", true},
-                                      {"store_and_forward", "string", true},
-                                      {"End_Lon", "float", true},
-                                      {"End_Lat", "float", true},
-                                      {"Payment_Type", "string", true},
-                                      {"Fare_Amt", "float", true},
-                                      {"surcharge", "float", true},
-                                      {"mta_tax", "float", true},
-                                      {"Tip_Amt", "float", true},
-                                      {"Tolls_Amt", "float", true},
-                                      {"Total_Amt", "float", true}}};
 
   const auto table_column_definitions = TableColumnDefinitions{{"Trip_Pickup_DateTime", DataType::String, true}};
   auto table = std::make_shared<Table>(table_column_definitions, TableType::Data, Chunk::DEFAULT_SIZE, UseMvcc::Yes);
@@ -174,7 +126,7 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const size_t row_count) {
   auto days_distribution = std::uniform_int_distribution<uint16_t>{1, 28};
   auto real_distribution = std::uniform_real_distribution<float>{0.0, 1.0};
 
-  std::cerr << "Generating synthetic data table with " << table->row_count() << " rows.\n";
+  std::cerr << "Generating synthetic data table with " << row_count << " rows.\n";
   auto timer = Timer{};
 
   Assert(row_count >= 10'000'000,
@@ -204,7 +156,6 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const size_t row_count) {
   // }
   table->last_chunk()->set_immutable();
 
-
   ChunkEncoder::encode_all_chunks(table, SegmentEncodingSpec{EncodingType::Dictionary});
   std::cerr << "Encoded table with " << table->row_count() << " rows in " << timer.lap_formatted() << ".\n";
 
@@ -218,7 +169,7 @@ cxxopts::Options get_server_cli_options() {
   // clang-format off
   cli_options.add_options()
     ("help", "Display this help and exit") // NOLINT
-    ("c,cores", "Specify the number of cores to use", cxxopts::value<uint32_t>()->default_value("0"))  // NOLINT
+    ("c,cores", "Specify the number of cores to use (0 is all cores).", cxxopts::value<uint32_t>()->default_value("0"))  // NOLINT
     ("b,benchmark_data", "Data to benchmark, can be 'taxi' or 'synthetic'",
      cxxopts::value<std::string>()->default_value("synthetic"))  // NOLINT
     ;  // NOLINT
@@ -234,7 +185,7 @@ int select_random_arm(int num_arms) {
 int select_arm_with_highest_reward(const std::vector<double>& rewards) {
   int best_arm = 0;
   double best_reward = rewards[0];
-  for (int i = 1; i < (int)rewards.size(); ++i) {
+  for (auto i = size_t{1}; i < rewards.size(); ++i) {
     if (rewards[i] > best_reward) {
       best_reward = rewards[i];
       best_arm = i;
@@ -247,7 +198,7 @@ auto pull_arm(int arm, const auto table, auto jobs, std::vector<int>& next_to_ex
               auto predicate) {
   // This is the actual scan
 
-  long reward;
+  auto reward = int64_t{};
   auto chunk_id = ChunkID{next_to_explore[arm]};
   if (next_to_explore[arm] == partition_start_and_end[arm].second) {
     reward = -1;
@@ -281,8 +232,8 @@ auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_t
 
   long reward;
   auto chunk_id = ChunkID{next_to_explore[arm]};
-  std::cout << chunk_id << " ";
-  if (next_to_explore[arm] >= (int)chunk_count) {
+  // std::cout << chunk_id << " ";
+  if (ChunkID{next_to_explore[arm]} >= chunk_count) {
     reward = -1;
     return reward;
   } else {
@@ -313,11 +264,11 @@ auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_t
 void ExploreExploit(int num_arms, double exploration_factor, std::vector<double>& rewards, std::vector<int>& counts,
                     std::vector<int>& scans, const auto table, auto jobs, auto& result_counts_and_timings_EE,
                     std::vector<int>& next_to_explore, auto partition_start_and_end, auto predicate) {
-  bool end = false;
-  int i = 0;
+  auto end = false;
+  auto i = size_t{0};
+  const auto start = std::chrono::system_clock::now();
   while (end == false) {
-    //const auto start= std::chrono::system_clock::now();
-    int arm;
+    auto arm = int32_t{};
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
     } else {
@@ -339,20 +290,20 @@ void ExploreExploit(int num_arms, double exploration_factor, std::vector<double>
 
     counts[arm]++;
     rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
-    result_counts_and_timings_EE[i] = {reward, std::chrono::system_clock::now()};
+    result_counts_and_timings_EE[i] = {reward, std::chrono::system_clock::now() - start};
     i++;
   }  // Update average reward for the selected arm
 }
 
 void ExploreExploitModular(int num_arms, double exploration_factor, std::vector<double>& rewards,
                            std::vector<int>& counts, std::vector<int>& scans, const auto table, auto jobs,
-                           auto& result_counts_and_timings_EE, std::vector<int>& next_to_explore,
+                           auto& result_counts_and_timings_EEM, std::vector<int>& next_to_explore,
                            auto partition_start_and_end, auto predicate, auto chunk_count) {
-  bool end = false;
-  int i = 0;
+  auto end = false;
+  auto i = size_t{0};
+  const auto start = std::chrono::system_clock::now();
   while (end == false) {
-    //const auto start= std::chrono::system_clock::now();
-    int arm;
+    auto arm = int32_t{};
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
     } else {
@@ -366,8 +317,8 @@ void ExploreExploitModular(int num_arms, double exploration_factor, std::vector<
       scans.erase(scans.begin() + arm);
       counts.erase(counts.begin() + arm);
       rewards.erase(rewards.begin() + arm);
-      //num_arms = num_arms-1;
-      std::cout << " chunk " << arm << "completed \n";
+      num_arms = num_arms-1;
+      // std::cout << " chunk " << arm << "completed \n";
       if (scans.size() == 0)
         end = true;
       reward = 0;
@@ -375,7 +326,7 @@ void ExploreExploitModular(int num_arms, double exploration_factor, std::vector<
 
     counts[arm]++;
     rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
-    result_counts_and_timings_EE[i] = {reward, std::chrono::system_clock::now()};
+    result_counts_and_timings_EEM[i] = {reward, std::chrono::system_clock::now() - start};
     i++;
   }  // Update average reward for the selected arm
 }
@@ -406,9 +357,10 @@ void benchmark_traditional_and_progressive_scan(auto& result_counts_and_timings,
       auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
       table_scan->execute();
 
+      const auto table_scan_end = std::chrono::system_clock::now();
       result_counts_and_timings[chunk_id] = {
           table_scan->get_output()->row_count(),
-          std::chrono::duration<int, std::nano>{std::chrono::system_clock::now() - start}};
+          std::chrono::duration<int, std::nano>{table_scan_end - start}};
     }));
   }
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
@@ -455,8 +407,14 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  if (parsed_options.count("cores") > 0) {
-    Hyrise::get().topology.use_default_topology(parsed_options["cores"].as<uint32_t>());
+  if (parsed_options.count("cores") != 1) {  // Multi-threaded
+    if (parsed_options.count("cores") > 1) {
+      Hyrise::get().topology.use_default_topology(parsed_options["cores"].as<uint32_t>());
+    } else {
+      // 0 denotes "all cores" for us.
+      Hyrise::get().topology.use_default_topology();  
+    }
+
     std::cout << Hyrise::get().topology;
     Hyrise::get().set_scheduler(std::make_shared<NodeQueueScheduler>());
   }
@@ -467,13 +425,12 @@ int main(int argc, char* argv[]) {
     Hyrise::get().storage_manager.add_table("benchmark_data", load_ny_taxi_data_to_table("full"));
     // Hyrise::get().storage_manager.add_table("benchmark_data", load_ny_taxi_data_to_table("1000"));
   } else if (benchmark_data_str == "synthetic") {
-    Hyrise::get().storage_manager.add_table("benchmark_data", load_synthetic_data_to_table(100'000'000));
-    Hyrise::get().storage_manager.add_table("benchmark_data", load_synthetic_data_to_table(100'000'000));
+    // Hyrise::get().storage_manager.add_table("benchmark_data", load_synthetic_data_to_table(100'000'000));
+    Hyrise::get().storage_manager.add_table("benchmark_data", load_synthetic_data_to_table(10'000'000));
   } else {
     Fail("Unexpected value for 'benchmark_data'.");
   }
 
-  Assert(Hyrise::get().storage_manager.has_table("benchmark_data"), "Benchmark data not loaded correctly.");
   Assert(Hyrise::get().storage_manager.has_table("benchmark_data"), "Benchmark data not loaded correctly.");
 
   const auto table = Hyrise::get().storage_manager.get_table("benchmark_data");
@@ -483,175 +440,179 @@ int main(int argc, char* argv[]) {
   const auto column = pqp_column_(column_id, DataType::String, true, "");
   const auto predicate = between_inclusive_(column, value_("2009-02-17 00:00:00"), value_("2009-02-23 23:59:59"));
 
-  auto result_counts_and_timings =
-      std::vector<std::pair<size_t, std::chrono::time_point<std::chrono::system_clock>>>(chunk_count);
-  auto result_counts_and_timings_EE =
-      std::vector<std::pair<size_t, std::chrono::time_point<std::chrono::system_clock>>>(chunk_count);
-  auto result_counts_and_timings_EEM =
-      std::vector<std::pair<size_t, std::chrono::time_point<std::chrono::system_clock>>>(chunk_count);
+  const auto core_count =
+      parsed_options.count("cores") == 0 ? std::thread::hardware_concurrency() : parsed_options.count("cores");
+  auto csv_file_name = std::string{"progressive_scan__"} + std::to_string(core_count) + "_cores__";
+  csv_file_name += benchmark_data_str + "__" + std::to_string(MEASUREMENT_COUNT) + "_runs.csv";
+  auto csv_output_file = std::ofstream(csv_file_name);
+  csv_output_file << "SCAN_TYPE,SCAN_ID,ROW_EMITTED,RUNTIME_NS\n";
 
-  auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
-  jobs.reserve(chunk_count);
-  //  This is the implementation of the explore-exploit scan. Firstly we try a naive explore-exploit with 5 partitions.
-  //  We will try to give more precedence to explore initially and exploit later on.
-  int num_partitions = 6;
-  double exploration_factor = 0.4;
-  std::vector<double> rewards(num_partitions, 0.0);
-  std::vector<int> counts(num_partitions, 0);
-  std::vector<int> next_to_explore(num_partitions, 0);
-  std::vector<int> scans(num_partitions, 0);
-  const auto start_EE = std::chrono::system_clock::now();
-  for (int i = 0; i < (int)scans.size(); i++) {
-    scans[i] = i;
-  }
-  auto partition_start_and_end = std::vector<std::pair<int, int>>(num_partitions);
-  for (int i = 0; i < num_partitions; i++) {
-    partition_start_and_end[i] = {(i * chunk_count) / num_partitions, ((i + 1) * chunk_count / num_partitions - 1)};
-    if (i == num_partitions - 1)
-      partition_start_and_end[i] = {(i * chunk_count) / num_partitions, chunk_count - 1};
-    next_to_explore[i] = (i * chunk_count) / num_partitions;
-    std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
-  }
+  auto exploration_factor = double{0.4};
+  for (auto measurement_id = size_t{0}; measurement_id < MEASUREMENT_COUNT; ++measurement_id) {
+    auto result_counts_and_timings =
+        std::vector<std::pair<size_t, std::chrono::nanoseconds>>(chunk_count);
+    auto result_counts_and_timings_EE =
+        std::vector<std::pair<size_t, std::chrono::nanoseconds>>(chunk_count);
+    auto result_counts_and_timings_EEM =
+        std::vector<std::pair<size_t, std::chrono::nanoseconds>>(chunk_count);
 
-  ExploreExploit(num_partitions, exploration_factor, rewards, counts, scans, table, jobs, result_counts_and_timings_EE,
-                 next_to_explore, partition_start_and_end, predicate);
+    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+    jobs.reserve(chunk_count);
+    //  This is the implementation of the explore-exploit scan. Firstly we try a naive explore-exploit with 5 partitions.
+    //  We will try to give more precedence to explore initially and exploit later on.
+    auto num_partitions = size_t{6};
+    
+    auto rewards = std::vector<double>(num_partitions, 0.0);
+    auto counts = std::vector<int32_t>(num_partitions, 0);
+    auto next_to_explore = std::vector<int32_t>(num_partitions, 0);
+    auto scans = std::vector<int32_t>(num_partitions, 0);
+    for (auto i = size_t{0}; i < scans.size(); ++i) {
+      scans[i] = i;
+    }
+    auto partition_start_and_end = std::vector<std::pair<int, int>>(num_partitions);
+    for (auto i = size_t{0}; i < num_partitions; ++i) {
+      partition_start_and_end[i] = {(i * chunk_count) / num_partitions, ((i + 1) * chunk_count / num_partitions - 1)};
+      if (i == num_partitions - 1)
+        partition_start_and_end[i] = {(i * chunk_count) / num_partitions, chunk_count - 1};
+      next_to_explore[i] = (i * chunk_count) / num_partitions;
+      // std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
+    }
 
-  //  This is the implementation of the  2nd explore-exploit scan. This partitions the data "modularly". Firstly we try a naive explore-exploit with 5 partitions.
-  //  We will try to give more precedence to explore initially and exploit later on.
-  num_partitions = 15;
-  double exploration_factor_EEM = 0.4;
-  std::vector<double> rewards_EEM(num_partitions, 0.0);
-  std::vector<int> counts_EEM(num_partitions, 0);
-  std::vector<int> next_to_explore_EEM(num_partitions, 0);
-  std::vector<int> scans_EEM(num_partitions, 0);
-  const auto start_EEM = std::chrono::system_clock::now();
-  for (int i = 0; i < (int)scans.size(); i++) {
-    scans[i] = i;
-  }
-  auto partition_start_and_end_EEM = std::vector<std::pair<int, int>>(num_partitions);
-  for (int i = 0; i < num_partitions; i++) {
-    partition_start_and_end_EEM[i] = {i, chunk_count - num_partitions + i};
-    next_to_explore_EEM[i] = i;
-    std::cout << " " << partition_start_and_end_EEM[i].second << " " << next_to_explore_EEM[i] << "\n";
-  }
+    ExploreExploit(num_partitions, exploration_factor, rewards, counts, scans, table, jobs, result_counts_and_timings_EE,
+                   next_to_explore, partition_start_and_end, predicate);
 
-  ExploreExploitModular(num_partitions, exploration_factor_EEM, rewards_EEM, counts_EEM, scans_EEM, table, jobs,
-                        result_counts_and_timings_EEM, next_to_explore_EEM, partition_start_and_end_EEM, predicate,
-                        chunk_count);
+    //  This is the implementation of the  2nd explore-exploit scan. This partitions the data "modularly". Firstly we try a naive explore-exploit with 5 partitions.
+    //  We will try to give more precedence to explore initially and exploit later on.
+    num_partitions = 15;
+    auto exploration_factor_EEM = double{0.4};
+    auto rewards_EEM = std::vector<double>(num_partitions, 0.0);
+    auto counts_EEM = std::vector<int>(num_partitions, 0);
+    auto next_to_explore_EEM = std::vector<int>(num_partitions, 0);
+    auto scans_EEM = std::vector<int>(num_partitions, 0);
+    for (auto i = size_t{0}; i < scans.size(); ++i) {
+      scans[i] = i;
+    }
+    auto partition_start_and_end_EEM = std::vector<std::pair<int, int>>(num_partitions);
+    for (auto i = size_t{0}; i < num_partitions; ++i) {
+      partition_start_and_end_EEM[i] = {i, chunk_count - num_partitions + i};
+      next_to_explore_EEM[i] = i;
+      // std::cout << " " << partition_start_and_end_EEM[i].second << " " << next_to_explore_EEM[i] << "\n";
+    }
 
-  // //select_arm_with_highest_reward(const std::vector<double>& rewards) ;
+    ExploreExploitModular(num_partitions, exploration_factor_EEM, rewards_EEM, counts_EEM, scans_EEM, table, jobs,
+                          result_counts_and_timings_EEM, next_to_explore_EEM, partition_start_and_end_EEM, predicate,
+                          chunk_count);
 
-  //     const auto start= std::chrono::system_clock::now();
-  // for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
-  //   jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-  //     // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-  //     auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
+    // //select_arm_with_highest_reward(const std::vector<double>& rewards) ;
 
-  //     auto single_chunk_table = std::make_shared<Table>(table->column_definitions(), TableType::Data,
-  //                                                       std::move(single_chunk_vector));
-  //     auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-  //     table_wrapper->execute();
+    //     const auto start= std::chrono::system_clock::now();
+    // for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
+    //   jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+    //     // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
+    //     auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
 
-  //     auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-  //     table_scan->execute();
+    //     auto single_chunk_table = std::make_shared<Table>(table->column_definitions(), TableType::Data,
+    //                                                       std::move(single_chunk_vector));
+    //     auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
+    //     table_wrapper->execute();
 
-  //     result_counts_and_timings[chunk_id] = {table_scan->get_output()->row_count(), std::chrono::system_clock::now()};
-  //   }));
-  // }
-  // Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
-  // This is the relevant part for the "ensamble scan". Below is the "default" scan in Hyrise. All chunks are
-  // processed in order as concurrently processsable tasks (we just look at the finish times of each chunk to simulate
-  // a "traditional" and a "progressive" (pipeling) table scan).
-  // I guess, you would reformulate the loop below to process "some" chunks and then decide with which chunks to
-  // continue.
-  const auto start = std::chrono::system_clock::now();
+    //     auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
+    //     table_scan->execute();
 
-  for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
-    jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-      // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-      auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
+    //     result_counts_and_timings[chunk_id] = {table_scan->get_output()->row_count(), std::chrono::system_clock::now()};
+    //   }));
+    // }
+    // Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+    // This is the relevant part for the "ensamble scan". Below is the "default" scan in Hyrise. All chunks are
+    // processed in order as concurrently processsable tasks (we just look at the finish times of each chunk to simulate
+    // a "traditional" and a "progressive" (pipeling) table scan).
+    // I guess, you would reformulate the loop below to process "some" chunks and then decide with which chunks to
+    // continue.
 
-      auto single_chunk_table =
-          std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
-      auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-      table_wrapper->execute();
 
-      auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-      table_scan->execute();
+    // for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
+    //   jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+    //     // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
+    //     auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
 
-      result_counts_and_timings[chunk_id] = {table_scan->get_output()->row_count(), std::chrono::system_clock::now()};
-    }));
-  }
-  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+    //     auto single_chunk_table =
+    //         std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
+    //     auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
+    //     table_wrapper->execute();
+
+    //     auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
+    //     table_scan->execute();
+
+    //     result_counts_and_timings[chunk_id] = {table_scan->get_output()->row_count(), std::chrono::duration<int, std::nano>{std::chrono::system_clock::now() - start}};
+    //   }));
+    // }
+    // Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+
+    benchmark_traditional_and_progressive_scan(result_counts_and_timings, table, predicate);
 
     // This is more or less for fun, right now. Above, we do the "traditional" table scan in Hyrise, but manually and
     // retend that we would immediately push "ready" chunks to the next pipeline operator. The "traditional" costs below
     // assume that we yield all tuples at the end at once.
     // The cost model is `for each tuple: costs += runtime_to_yield_tuple`.
     auto max_runtime = result_counts_and_timings[0].second;
-    auto overall_result_count = size_t{0};
-    auto costs_traditional_scan =
-        double{0.0};  // TODO: Remove the metric stuff, once we the CSV parsing/plotting works.
+    
+    auto costs_traditional_scan = double{0.0};  // TODO: Remove the metric stuff, once we the CSV parsing/plotting works.
     auto costs_progressive_scan = double{0.0};
+    auto costs_progressive_scan_EE = double{0.0};
+    auto costs_progressive_scan_EEM = double{0.0};
+
+    // We assume the "simple progressive" Hyrise scan does not have any issues and thus assume that it yields the
+    // correct number of output tuples.
+    auto expected_result_count = size_t{0};
+
     for (const auto& [result_count, runtime] : result_counts_and_timings) {
-      overall_result_count += result_count;
+      expected_result_count += result_count;
+      // std::cerr << "Chunk results >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms)\n";
       max_runtime = std::max(max_runtime, runtime);
       costs_traditional_scan += static_cast<double>(result_count);
       costs_progressive_scan += static_cast<double>(result_count * runtime.count());
+      // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
+
       csv_output_file << std::format("Progressive,{},{},{}\n", measurement_id, result_count,
                                      std::chrono::duration<int, std::nano>{runtime}.count());
     }
-    std::cerr << std::format("costs_traditional_scan: {:16.2f}\n",
-                             costs_traditional_scan * std::chrono::duration<double, std::micro>{max_runtime}.count());
-    std::cerr << std::format("costs_progressive_scan: {:16.2f}\n", costs_progressive_scan);
+
+    
+    auto ee_result_count = size_t{0};
+    for (const auto& [result_count, runtime] : result_counts_and_timings_EE) {
+      ee_result_count += result_count;
+      // std::cerr << "Chunk results EE >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms)\n";
+
+      costs_progressive_scan_EE += static_cast<double>(result_count * runtime.count());
+      // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
+    }
+    if (ee_result_count != expected_result_count) {
+      std::cerr << "ERROR: EE yielded an expected result size of " << ee_result_count << " rows (expected "
+                << expected_result_count << ")\n";
+    }
+
+    auto eem_result_count = size_t{0};
+    for (const auto& [result_count, runtime] : result_counts_and_timings_EEM) {
+      eem_result_count += result_count;
+      // std::cerr << "Chunk results EEM >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms)\n";
+
+      costs_progressive_scan_EEM += static_cast<double>(result_count * runtime.count());
+      // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
+    }
+    if (eem_result_count != expected_result_count) {
+      std::cerr << "ERROR: EEM yielded an expected result size of " << eem_result_count << " rows (expected "
+                << expected_result_count << ")\n";
+    }
+
+
+    std::cerr << std::format("costs_traditional_scan:     {:16.2f}\n", costs_traditional_scan * static_cast<double>(max_runtime.count()));
+    std::cerr << std::format("costs_progressive_scan:     {:16.2f}\n", costs_progressive_scan);
+    std::cerr << std::format("costs_progressive_scan_EE:  {:16.2f}\n", costs_progressive_scan_EE);
+    std::cerr << std::format("costs_progressive_scan_EEM: {:16.2f}\n", costs_progressive_scan_EEM);
     std::cerr << "Traditional scan took " << std::chrono::duration<double, std::micro>{max_runtime}.count() << " us.\n";
-  // This is more or less for fun, right now. Above, we do the "traditional" table scan in Hyrise, but manually and
-  // pretend that we would immediately push "ready" results to the next pipeline operator.
-  // The "traditional" costs below assume that we yield all tuples at the end at once.
-  // The cost model is `for each tuple: costs += runtime_to_yield_tuple`.
-  auto max_runtime = start;
-  auto costs_traditional_scan = double{0.0};
-  auto costs_progressive_scan = double{0.0};
-  auto costs_progressive_scan_EE = double{0.0};
-  auto costs_progressive_scan_EEM = double{0.0};
-  for (const auto& [result_count, runtime] : result_counts_and_timings) {
-    std::cerr << "Chunk results >> " << result_count << " "
-              << std::chrono::duration<double, std::micro>{runtime - start} << '\n';
-    max_runtime = std::max(max_runtime, runtime);
-    costs_traditional_scan += static_cast<double>(result_count);
-    costs_progressive_scan +=
-        static_cast<double>(result_count) * std::chrono::duration<double, std::micro>{runtime - start}.count();
-    // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
-  }
-
-  for (const auto& [result_count, runtime] : result_counts_and_timings_EE) {
-    std::cerr << "Chunk results  EE>> " << result_count << " "
-              << std::chrono::duration<double, std::micro>{runtime - start_EE} << '\n';
-
-    costs_progressive_scan_EE +=
-        static_cast<double>(result_count) * std::chrono::duration<double, std::micro>{runtime - start_EE}.count();
-    // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
-  }
-
-  for (const auto& [result_count, runtime] : result_counts_and_timings_EEM) {
-    std::cerr << "Chunk results  EEM>> " << result_count << " "
-              << std::chrono::duration<double, std::micro>{runtime - start_EEM} << '\n';
-
-    costs_progressive_scan_EEM +=
-        static_cast<double>(result_count) * std::chrono::duration<double, std::micro>{runtime - start_EEM}.count();
-    // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
-  }
-  std::cerr << std::format(
-      "costs_traditional_scan: {:16.2f}\n",
-      costs_traditional_scan * std::chrono::duration<double, std::micro>{max_runtime - start}.count());
-  std::cerr << std::format("costs_progressive_scan: {:16.2f}\n", costs_progressive_scan);
-  std::cerr << std::format("costs_progressive_scan_EE: {:16.2f}\n", costs_progressive_scan_EE);
-  std::cerr << std::format("costs_progressive_scan_EEM: {:16.2f}\n", costs_progressive_scan_EEM);
-  std::cerr << "Traditional scan took " << std::chrono::duration<double, std::micro>{max_runtime - start}.count()
-            << " us.\n";
 
     // Write single line for "traditional" scan.
-    csv_output_file << std::format("Operator-At-Once,{},{},{}\n", measurement_id, overall_result_count,
+    csv_output_file << std::format("Operator-At-Once,{},{},{}\n", measurement_id, expected_result_count,
                                    std::chrono::duration<int, std::nano>{max_runtime}.count());
   }
 
