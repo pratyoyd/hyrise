@@ -62,7 +62,7 @@ namespace hyrise {
 
 Shuffle::Shuffle(const std::shared_ptr<const AbstractOperator>& input_operator,
                  std::shared_ptr<ChunkSink>& input_chunk_sink, std::shared_ptr<ChunkSink>& output_chunk_sink,
-                 const std::vector<ColumnID>& columns, const std::vector<size_t>& partition_counts)
+                 std::vector<ColumnID>&& columns, std::vector<size_t>&& partition_counts)
     : AbstractReadOnlyOperator(OperatorType::TableScan, input_operator, nullptr),
       _input_chunk_sink{input_chunk_sink},
       _output_chunk_sink{output_chunk_sink},
