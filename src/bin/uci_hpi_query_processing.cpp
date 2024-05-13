@@ -196,11 +196,11 @@ int select_arm_with_highest_reward(const std::vector<double>& rewards) {
 
 auto pull_arm(int arm, const auto table, auto jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
               auto predicate) {
-  // This is the actual scan
+  // This is the actual scan for EE
 
   auto reward = int64_t{};
   auto chunk_id = ChunkID{next_to_explore[arm]};
-  if (next_to_explore[arm] == partition_start_and_end[arm].second) {
+  if (next_to_explore[arm] > partition_start_and_end[arm].second) {
     reward = -1;
     return reward;
   } else {
@@ -228,7 +228,7 @@ auto pull_arm(int arm, const auto table, auto jobs, std::vector<int>& next_to_ex
 
 auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
                   auto predicate, int num_partitions, auto chunk_count) {
-  // This is the actual scan
+  // This is the actual scan for EEM
 
   long reward;
   auto chunk_id = ChunkID{next_to_explore[arm]};
@@ -266,34 +266,51 @@ void ExploreExploit(int num_arms, double exploration_factor, std::vector<double>
                     std::vector<int>& next_to_explore, auto partition_start_and_end, auto predicate) {
   auto end = false;
   auto i = size_t{0};
+  auto completed_arm = std::vector<int>();
   const auto start = std::chrono::system_clock::now();
   while (end == false) {
     auto arm = int32_t{};
+   // std::cout<<" "<<num_arms<<" ";
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
     } else {
       arm = select_arm_with_highest_reward(rewards);  // Exploit
     }
 
-    long reward = pull_arm(arm, table, jobs, next_to_explore, partition_start_and_end, predicate);
-    //std::cout<<reward<<"\n";
-    if (reward == -1) {
-      scans.erase(scans.begin() + arm);
-      counts.erase(counts.begin() + arm);
-      rewards.erase(rewards.begin() + arm);
-      num_arms = num_arms - 1;
-      // std::cout<<" chunk "<<arm<<"completed \n";
-      if (num_arms == 0)
+    
+     std::vector<int>::iterator it;
+     int do_we_pull_arm = 1;
+     if(!completed_arm.empty()){
+     it = std::find(completed_arm.begin(), 
+                 completed_arm.end(), arm);
+     if(it != completed_arm.end())do_we_pull_arm = 0;
+   }
+     if(do_we_pull_arm == 1){             //if arm is not exhausted                  
+     long reward = pull_arm(arm, table, jobs, next_to_explore, partition_start_and_end, predicate);
+   // std::cout<<reward<<"\n";
+    if (reward == -1) {                         //arm is exhausted
+      rewards[arm] = 0;                       //arm has no more reward to give
+      completed_arm.emplace_back(arm); 
+      if (completed_arm.size() == scans.size())
         end = true;
       reward = 0;
+      //std::cout<<" "<<i<<" ";
     }
-
+    else{
+    result_counts_and_timings_EE[i] = {reward, std::chrono::system_clock::now() - start};
     counts[arm]++;
     rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
-    result_counts_and_timings_EE[i] = {reward, std::chrono::system_clock::now() - start};
+    
     i++;
-  }  // Update average reward for the selected arm
+  
+  }
 }
+    
+  }
+
+  
+  }  // Update average reward for the selected arm
+
 
 void ExploreExploitModular(int num_arms, double exploration_factor, std::vector<double>& rewards,
                            std::vector<int>& counts, std::vector<int>& scans, const auto table, auto jobs,
@@ -301,34 +318,75 @@ void ExploreExploitModular(int num_arms, double exploration_factor, std::vector<
                            auto partition_start_and_end, auto predicate, auto chunk_count) {
   auto end = false;
   auto i = size_t{0};
+  auto completed_arm = std::vector<int>();
   const auto start = std::chrono::system_clock::now();
-  while (end == false) {
+  // while (end == false) {
+  //   auto arm = int32_t{};
+  //   if ((double)rand() / RAND_MAX < exploration_factor) {
+  //     arm = select_random_arm(num_arms);  // Explore
+  //   } else {
+  //     arm = select_arm_with_highest_reward(rewards);  // Exploit
+  //   }
+
+  //   long reward =
+  //       pull_arm_EEM(arm, table, jobs, next_to_explore, partition_start_and_end, predicate, num_arms, chunk_count);
+  //   // std::cout<<arm<< " "<<reward<<"\n";
+  //   if (reward == -1) {
+  //     scans.erase(scans.begin() + arm);
+  //     counts.erase(counts.begin() + arm);
+  //     rewards.erase(rewards.begin() + arm);
+  //     num_arms = num_arms-1;
+  //     // std::cout << " chunk " << arm << "completed \n";
+  //     if (scans.size() == 0)
+  //       end = true;
+  //     reward = 0;
+  //   }
+
+  //   counts[arm]++;
+  //   rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
+  //   result_counts_and_timings_EEM[i] = {reward, std::chrono::system_clock::now() - start};
+  //   i++;
+  // }  // Update average reward for the selected arm
+   while (end == false) {
     auto arm = int32_t{};
+   // std::cout<<" "<<num_arms<<" ";
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
     } else {
       arm = select_arm_with_highest_reward(rewards);  // Exploit
     }
 
-    long reward =
-        pull_arm_EEM(arm, table, jobs, next_to_explore, partition_start_and_end, predicate, num_arms, chunk_count);
-    // std::cout<<arm<< " "<<reward<<"\n";
-    if (reward == -1) {
-      scans.erase(scans.begin() + arm);
-      counts.erase(counts.begin() + arm);
-      rewards.erase(rewards.begin() + arm);
-      num_arms = num_arms-1;
-      // std::cout << " chunk " << arm << "completed \n";
-      if (scans.size() == 0)
+    
+     std::vector<int>::iterator it;
+     int do_we_pull_arm = 1;
+     if(!completed_arm.empty()){
+     it = std::find(completed_arm.begin(), 
+                 completed_arm.end(), arm);
+     if(it != completed_arm.end())do_we_pull_arm = 0;
+   }
+     if(do_we_pull_arm == 1){             //if arm is not exhausted                  
+     long reward =
+         pull_arm_EEM(arm, table, jobs, next_to_explore, partition_start_and_end, predicate, num_arms, chunk_count);
+   // std::cout<<reward<<"\n";
+    if (reward == -1) {                         //arm is exhausted
+      rewards[arm] = 0;                       //arm has no more reward to give
+      completed_arm.emplace_back(arm); 
+      if (completed_arm.size() == scans.size())
         end = true;
       reward = 0;
+      //std::cout<<" "<<i<<" ";
     }
-
+    else{
+    result_counts_and_timings_EEM[i] = {reward, std::chrono::system_clock::now() - start};
     counts[arm]++;
     rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
-    result_counts_and_timings_EEM[i] = {reward, std::chrono::system_clock::now() - start};
+    
     i++;
-  }  // Update average reward for the selected arm
+  
+  }
+}
+    
+  }
 }
 
 void benchmark_traditional_and_progressive_scan(auto& result_counts_and_timings, const auto& table,
@@ -475,7 +533,7 @@ int main(int argc, char* argv[]) {
       if (i == num_partitions - 1)
         partition_start_and_end[i] = {(i * chunk_count) / num_partitions, chunk_count - 1};
       next_to_explore[i] = (i * chunk_count) / num_partitions;
-      // std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
+      std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
     }
 
     ExploreExploit(num_partitions, exploration_factor, rewards, counts, scans, table, jobs, result_counts_and_timings_EE,
@@ -503,50 +561,7 @@ int main(int argc, char* argv[]) {
                           result_counts_and_timings_EEM, next_to_explore_EEM, partition_start_and_end_EEM, predicate,
                           chunk_count);
 
-    // //select_arm_with_highest_reward(const std::vector<double>& rewards) ;
-
-    //     const auto start= std::chrono::system_clock::now();
-    // for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
-    //   jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-    //     // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-    //     auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
-
-    //     auto single_chunk_table = std::make_shared<Table>(table->column_definitions(), TableType::Data,
-    //                                                       std::move(single_chunk_vector));
-    //     auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-    //     table_wrapper->execute();
-
-    //     auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-    //     table_scan->execute();
-
-    //     result_counts_and_timings[chunk_id] = {table_scan->get_output()->row_count(), std::chrono::system_clock::now()};
-    //   }));
-    // }
-    // Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
-    // This is the relevant part for the "ensamble scan". Below is the "default" scan in Hyrise. All chunks are
-    // processed in order as concurrently processsable tasks (we just look at the finish times of each chunk to simulate
-    // a "traditional" and a "progressive" (pipeling) table scan).
-    // I guess, you would reformulate the loop below to process "some" chunks and then decide with which chunks to
-    // continue.
-
-
-    // for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
-    //   jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-    //     // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-    //     auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
-
-    //     auto single_chunk_table =
-    //         std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
-    //     auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-    //     table_wrapper->execute();
-
-    //     auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-    //     table_scan->execute();
-
-    //     result_counts_and_timings[chunk_id] = {table_scan->get_output()->row_count(), std::chrono::duration<int, std::nano>{std::chrono::system_clock::now() - start}};
-    //   }));
-    // }
-    // Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+  
 
     benchmark_traditional_and_progressive_scan(result_counts_and_timings, table, predicate);
 
@@ -565,45 +580,55 @@ int main(int argc, char* argv[]) {
     // correct number of output tuples.
     auto expected_result_count = size_t{0};
 
+    
     for (const auto& [result_count, runtime] : result_counts_and_timings) {
+     
       expected_result_count += result_count;
-      // std::cerr << "Chunk results >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms)\n";
+      //std::cerr << "Chunk results >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms) "<<i<<"\n";
       max_runtime = std::max(max_runtime, runtime);
       costs_traditional_scan += static_cast<double>(result_count);
       costs_progressive_scan += static_cast<double>(result_count * runtime.count());
-      // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
-
+     
       csv_output_file << std::format("Progressive,{},{},{}\n", measurement_id, result_count,
                                      std::chrono::duration<int, std::nano>{runtime}.count());
     }
+    std::cerr << "Progressive  Total RunTime "<< max_runtime <<"\n";
 
-    
+   
     auto ee_result_count = size_t{0};
+     max_runtime = result_counts_and_timings_EE[0].second;
     for (const auto& [result_count, runtime] : result_counts_and_timings_EE) {
+    
       ee_result_count += result_count;
-      // std::cerr << "Chunk results EE >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms)\n";
+      max_runtime = std::max(max_runtime, runtime);
+      //std::cerr << "Chunk results EE >> " << ee_result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms) "<<i<<"\n";
 
       costs_progressive_scan_EE += static_cast<double>(result_count * runtime.count());
-      // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
+      //std::cerr <<"EE " + result_count << '\n'<<" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
     }
     if (ee_result_count != expected_result_count) {
       std::cerr << "ERROR: EE yielded an expected result size of " << ee_result_count << " rows (expected "
                 << expected_result_count << ")\n";
     }
+    std::cerr << "EE  Total RunTime "<< max_runtime <<"\n";
 
+  
     auto eem_result_count = size_t{0};
+    max_runtime = result_counts_and_timings_EEM[0].second;
     for (const auto& [result_count, runtime] : result_counts_and_timings_EEM) {
+     
       eem_result_count += result_count;
-      // std::cerr << "Chunk results EEM >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms)\n";
+      max_runtime = std::max(max_runtime, runtime);
+      //std::cerr << "Chunk results EEM >> " << eem_result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms) "<<i<<"\n";
 
       costs_progressive_scan_EEM += static_cast<double>(result_count * runtime.count());
-      // std::cerr << result_count << '\n'; //" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
+      //std::cerr << "EEM "+ result_count << '\n'<<" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
     }
     if (eem_result_count != expected_result_count) {
       std::cerr << "ERROR: EEM yielded an expected result size of " << eem_result_count << " rows (expected "
                 << expected_result_count << ")\n";
     }
-
+    std::cerr << "EEM  Total RunTime " << max_runtime <<"\n";
 
     std::cerr << std::format("costs_traditional_scan:     {:16.2f}\n", costs_traditional_scan * static_cast<double>(max_runtime.count()));
     std::cerr << std::format("costs_progressive_scan:     {:16.2f}\n", costs_progressive_scan);
@@ -619,3 +644,4 @@ int main(int argc, char* argv[]) {
   csv_output_file.close();
   Hyrise::get().scheduler()->finish();
 }
+
