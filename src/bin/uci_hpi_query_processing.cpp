@@ -505,7 +505,7 @@ int main(int argc, char* argv[]) {
   auto csv_output_file = std::ofstream(csv_file_name);
   csv_output_file << "SCAN_TYPE,SCAN_ID,ROW_EMITTED,RUNTIME_NS\n";
 
-  auto exploration_factor = double{0.4};
+  auto exploration_factor = double{0.3};
   for (auto measurement_id = size_t{0}; measurement_id < MEASUREMENT_COUNT; ++measurement_id) {
     auto result_counts_and_timings =
         std::vector<std::pair<size_t, std::chrono::nanoseconds>>(chunk_count);
@@ -542,7 +542,7 @@ int main(int argc, char* argv[]) {
     //  This is the implementation of the  2nd explore-exploit scan. This partitions the data "modularly". Firstly we try a naive explore-exploit with 5 partitions.
     //  We will try to give more precedence to explore initially and exploit later on.
     num_partitions = 15;
-    auto exploration_factor_EEM = double{0.4};
+    auto exploration_factor_EEM = double{0.3};
     auto rewards_EEM = std::vector<double>(num_partitions, 0.0);
     auto counts_EEM = std::vector<int>(num_partitions, 0);
     auto next_to_explore_EEM = std::vector<int>(num_partitions, 0);
@@ -569,7 +569,7 @@ int main(int argc, char* argv[]) {
     // retend that we would immediately push "ready" chunks to the next pipeline operator. The "traditional" costs below
     // assume that we yield all tuples at the end at once.
     // The cost model is `for each tuple: costs += runtime_to_yield_tuple`.
-    auto max_runtime = result_counts_and_timings[0].second;
+    auto max_runtime_progressive = result_counts_and_timings[0].second;
     
     auto costs_traditional_scan = double{0.0};  // TODO: Remove the metric stuff, once we the CSV parsing/plotting works.
     auto costs_progressive_scan = double{0.0};
@@ -585,18 +585,18 @@ int main(int argc, char* argv[]) {
      
       expected_result_count += result_count;
       //std::cerr << "Chunk results >> " << result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms) "<<i<<"\n";
-      max_runtime = std::max(max_runtime, runtime);
+      max_runtime_progressive = std::max(max_runtime_progressive, runtime);
       costs_traditional_scan += static_cast<double>(result_count);
       costs_progressive_scan += static_cast<double>(result_count * runtime.count());
      
       csv_output_file << std::format("Progressive,{},{},{}\n", measurement_id, result_count,
                                      std::chrono::duration<int, std::nano>{runtime}.count());
     }
-    std::cerr << "Progressive  Total RunTime "<< max_runtime <<"\n";
+    std::cerr << "Progressive  Total RunTime "<< max_runtime_progressive <<"\n";
 
    
     auto ee_result_count = size_t{0};
-     max_runtime = result_counts_and_timings_EE[0].second;
+     auto max_runtime = result_counts_and_timings_EE[0].second;
     for (const auto& [result_count, runtime] : result_counts_and_timings_EE) {
     
       ee_result_count += result_count;
@@ -630,7 +630,7 @@ int main(int argc, char* argv[]) {
     }
     std::cerr << "EEM  Total RunTime " << max_runtime <<"\n";
 
-    std::cerr << std::format("costs_traditional_scan:     {:16.2f}\n", costs_traditional_scan * static_cast<double>(max_runtime.count()));
+    std::cerr << std::format("costs_traditional_scan:     {:16.2f}\n", costs_traditional_scan * static_cast<double>(max_runtime_progressive.count()));
     std::cerr << std::format("costs_progressive_scan:     {:16.2f}\n", costs_progressive_scan);
     std::cerr << std::format("costs_progressive_scan_EE:  {:16.2f}\n", costs_progressive_scan_EE);
     std::cerr << std::format("costs_progressive_scan_EEM: {:16.2f}\n", costs_progressive_scan_EEM);
