@@ -26,13 +26,14 @@ TEST(ProgressiveTest, Shuffle) {
   for (auto chunk_id = ChunkID{0}; chunk_id < table->chunk_count(); ++chunk_id) {
     auto single_chunk_vector = std::vector<std::shared_ptr<Chunk>>{};
     single_chunk_vector.emplace_back(progressive::recreate_non_const_chunk(table->get_chunk(chunk_id)));
-    sink1->add_chunk(std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector), UseMvcc::Yes));
+    sink1->add_chunk(std::make_shared<Table>(table->column_definitions(), TableType::Data,
+                                             std::move(single_chunk_vector), UseMvcc::Yes));
   }
   sink1->set_all_chunks_added();
 
-  auto shuffle = std::make_shared<Shuffle>(table_wrapper, sink1, sink2, std::vector<ColumnID>{ColumnID{0}}, std::vector<size_t>{size_t{64}});
+  auto shuffle = std::make_shared<Shuffle>(table_wrapper, sink1, sink2, std::vector<ColumnID>{ColumnID{0}},
+                                           std::vector<size_t>{size_t{64}});
   shuffle->execute();
 }
 
 }  // namespace hyrise
-

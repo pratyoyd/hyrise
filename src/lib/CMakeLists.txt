@@ -675,6 +675,8 @@ set(
     utils/template_type.hpp
     utils/timer.cpp
     utils/timer.hpp
+    utils/uci_hpi/table_generator.cpp
+    utils/uci_hpi/table_generator.hpp
     visualization/abstract_visualizer.hpp
     visualization/join_graph_visualizer.cpp
     visualization/join_graph_visualizer.hpp

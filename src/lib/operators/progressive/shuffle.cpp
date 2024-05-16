@@ -3,9 +3,9 @@
 #include <cmath>
 #include <deque>
 #include <memory>
+#include <semaphore>
 #include <thread>
 #include <tuple>
-#include <semaphore>
 #include <vector>
 
 #include "hyrise.hpp"
@@ -17,7 +17,6 @@
 #include "scheduler/node_queue_scheduler.hpp"
 #include "scheduler/task_queue.hpp"
 #include "storage/segment_iterate.hpp"
-#include "storage/table.hpp"
 #include "storage/table.hpp"
 #include "utils/assert.hpp"
 #include "utils/progressive_utils.hpp"
@@ -41,14 +40,14 @@ void _shuffle_chunk(const std::shared_ptr<Chunk>& chunk, auto& intermediate_resu
   resolve_data_type(partition_segment->data_type(), [&](const auto data_type) {
     using ColumnDataType = typename decltype(data_type)::type;
     segment_iterate<ColumnDataType>(*partition_segment, [&](const auto& position) {
-      std::cerr << std::format("Radix of {} is {}\n", position.value(), mask & std::hash<ColumnDataType>{}(position.value()));
+      std::cerr << std::format("Radix of {} is {}\n", position.value(),
+                               mask & std::hash<ColumnDataType>{}(position.value()));
     });
   });
 }
 
 void shuffle_chunk(const std::shared_ptr<Chunk>& chunk, auto& intermediate_results,
                    const std::vector<ColumnID>& columns, const std::vector<size_t>& partition_counts) {
-
   for (auto partition_id = size_t{0}; partition_id < columns.size(); ++partition_id) {
     _shuffle_chunk(chunk, intermediate_results, columns[partition_id], partition_counts[partition_id]);
   }
@@ -82,8 +81,8 @@ std::shared_ptr<AbstractOperator> Shuffle::_on_deep_copy(
     std::unordered_map<const AbstractOperator*, std::shared_ptr<AbstractOperator>>& /*copied_ops*/) const {
   auto copy_columns = _columns;
   auto copy_partition_counts = _partition_counts;
-  auto copy =
-      std::make_shared<Shuffle>(copied_left_input, _input_chunk_sink, _output_chunk_sink, std::move(copy_columns), std::move(copy_partition_counts));
+  auto copy = std::make_shared<Shuffle>(copied_left_input, _input_chunk_sink, _output_chunk_sink,
+                                        std::move(copy_columns), std::move(copy_partition_counts));
   return copy;
 }
 

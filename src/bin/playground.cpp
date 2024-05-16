@@ -20,9 +20,10 @@
 #include "utils/timer.hpp"
 
 namespace hyrise {}  // namespace hyrise
+
 namespace hyrise {}  // namespace hyrise
 
-using namespace hyrise;                                                // NOLINT(build/namespaces)
+using namespace hyrise;                         // NOLINT(build/namespaces)
 using namespace hyrise::expression_functional;  // NOLINT(build/namespaces)
 
 int main() {
@@ -33,8 +34,9 @@ int main() {
   // constexpr auto SCALE_FACTOR = 5.0f;
   auto benchmark_config = BenchmarkConfig::get_default_config();
   TPCHTableGenerator(SCALE_FACTOR, ClusteringConfiguration::None, std::make_shared<BenchmarkConfig>(benchmark_config))
-  TPCHTableGenerator(SCALE_FACTOR, ClusteringConfiguration::None, std::make_shared<BenchmarkConfig>(benchmark_config))
-      .generate_and_store();
+      TPCHTableGenerator(SCALE_FACTOR, ClusteringConfiguration::None,
+                         std::make_shared<BenchmarkConfig>(benchmark_config))
+          .generate_and_store();
 
   auto runs = size_t{0};
   while (runs < 100'000) {
@@ -50,7 +52,7 @@ int main() {
     initial_chunk_exchange->set_name("Initial_Sink");
     initial_chunk_exchange->never_clear_output();
     auto shuffle_scan1_exchange = std::make_shared<ChunkSink>(
-         lineitem_wrapper,
+        lineitem_wrapper,
         SinkType::
             Forwarding);  // input op is actually only needed for initial sink, but currently interface needs "some random" operator.
     shuffle_scan1_exchange->set_name("Shuffle_Scan1_Sink");
@@ -90,7 +92,8 @@ int main() {
     // Shuffle
     //
     pipeline_jobs.emplace_back(std::make_shared<JobTask>([&]() {
-      auto shuffle = std::make_shared<Shuffle>(lineitem_wrapper, initial_chunk_exchange, shuffle_scan1_exchange, std::vector<ColumnID>{ColumnID{1}}, std::vector<size_t>{size_t{64}});
+      auto shuffle = std::make_shared<Shuffle>(lineitem_wrapper, initial_chunk_exchange, shuffle_scan1_exchange,
+                                               std::vector<ColumnID>{ColumnID{1}}, std::vector<size_t>{size_t{64}});
       shuffle->never_clear_output();
       shuffle->execute();
     }));
