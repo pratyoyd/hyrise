@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -32,6 +33,23 @@ namespace {
 
 using namespace hyrise;
 constexpr auto MEASUREMENT_COUNT = size_t{1};
+
+void scan_single_chunk_and_store_result(const auto& table, const auto& predicate, auto& results, const ChunkID chunk_id, const auto start) {
+  // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
+  auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
+
+  auto single_chunk_table =
+      std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
+  auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
+  table_wrapper->execute();
+
+  auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
+  table_scan->execute();
+
+  const auto table_scan_end = std::chrono::system_clock::now();
+  results[chunk_id] = {table_scan->get_output()->row_count(),
+                      std::chrono::duration<int, std::nano>{table_scan_end - start}};
+}
 
 cxxopts::Options get_server_cli_options() {
   auto cli_options = cxxopts::Options("./hyriseUCIHPI",
@@ -320,25 +338,57 @@ void benchmark_traditional_and_progressive_scan(auto& result_counts_and_timings,
   const auto start = std::chrono::system_clock::now();
   for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
     jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-      // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-      auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
-
-      auto single_chunk_table =
-          std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
-      auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-      table_wrapper->execute();
-
-      auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-      table_scan->execute();
-
-      const auto table_scan_end = std::chrono::system_clock::now();
-      result_counts_and_timings[chunk_id] = {table_scan->get_output()->row_count(),
-                                             std::chrono::duration<int, std::nano>{table_scan_end - start}};
+      scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, chunk_id, start);
     }));
   }
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
 }
 
+void benchmark_progressive_martin_scan(auto& result_counts_and_timings, const auto& table,
+                                       const auto& predicate) {
+  const auto chunk_count = table->chunk_count();
+  auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+  jobs.reserve(chunk_count);
+
+  // Even though we might have less cores (passed via `--cores`), just use all of them. Keep it simple for now.
+  const auto concurrent_worker_count = std::thread::hardware_concurrency();
+
+  const auto chunks_per_worker = static_cast<size_t>(std::ceil(static_cast<double>(chunk_count) / concurrent_worker_count));
+  // const auto sample_chunk_count_per_worker = std::max(size_t{1}, chunks_per_worker / 10);
+
+  auto processed_chunks = std::vector<std::atomic_bool>(chunk_count);
+
+  std::default_random_engine random_engine(17);
+  std::uniform_int_distribution<uint32_t> uniform_distribution(0, chunks_per_worker);
+
+  for (auto worker_id = size_t{0}; worker_id < concurrent_worker_count; ++worker_id) {
+    // jobs.emplace_back(std::make_shared<JobTask>([&, worker_id]() {
+
+    //   const auto start_chunk_id = ChunkID{worker_id * chunks_per_worker};
+    //   const auto end_chunk_id = ChunkID{static_cast<ChunkID::base_type>(std::min(size_t{chunk_count}, (worker_id + 1) * chunks_per_worker - 1))};
+    //   const auto chunks_to_process = end_chunk_id - start_chunk_id + 1;
+
+    //   auto sample_chunk_ids = std::vector<ChunkID>{};
+    //   sample_chunk_ids.reserve(sample_chunk_count_per_worker);
+    //   for (auto round = size_t{0}; round < sample_chunk_count_per_worker; ++round) {
+    //     sample_chunk_ids.emplace_back(start_chunk_id + uniform_distribution(random_engine));
+    //     // std::cout << std::format("I run from {} to {} and add the random chunk id {}\n", static_cast<size_t>(start_chunk_id), static_cast<size_t>(end_chunk_id), );
+    //   }
+
+    //   auto chunks_processed = ChunkID{0};
+    //   while (chunks_processed < chunks_to_process) {
+    //     if (chunks_processed % 2 == 0) {
+    //       // Process assigned chunks.
+    //     } else {
+    //       // Pick from global queue.
+    //     }
+    //   }
+    // }));
+  }
+
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+
+}
 
 }  // namespace
 
@@ -419,6 +469,8 @@ int main(int argc, char* argv[]) {
     ExploreExploitModular(result_counts_and_timings_EEM, table, predicate);
 
     benchmark_traditional_and_progressive_scan(result_counts_and_timings, table, predicate);
+
+    benchmark_progressive_martin_scan(result_counts_and_timings, table, predicate);
 
     // This is more or less for fun, right now. Above, we do the "traditional" table scan in Hyrise, but manually and
     // retend that we would immediately push "ready" chunks to the next pipeline operator. The "traditional" costs below

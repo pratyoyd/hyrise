@@ -21,8 +21,6 @@
 
 namespace hyrise {}  // namespace hyrise
 
-namespace hyrise {}  // namespace hyrise
-
 using namespace hyrise;                         // NOLINT(build/namespaces)
 using namespace hyrise::expression_functional;  // NOLINT(build/namespaces)
 
