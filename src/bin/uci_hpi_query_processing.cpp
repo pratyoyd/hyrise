@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include <oneapi/tbb/concurrent_priority_queue.h>
 #include <boost/algorithm/string.hpp>
 
 #include "cxxopts.hpp"
@@ -33,6 +34,13 @@ namespace {
 
 using namespace hyrise;
 constexpr auto MEASUREMENT_COUNT = size_t{1};
+
+class compare_f {
+ public:
+  bool operator()(const auto& lhs, const auto&rhs) const {
+        return lhs.second < rhs.second;
+    }
+};
 
 void scan_single_chunk_and_store_result(const auto& table, const auto& predicate, auto& results, const ChunkID chunk_id, const auto start) {
   // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
@@ -354,9 +362,18 @@ void benchmark_progressive_martin_scan(auto& result_counts_and_timings, const au
   const auto concurrent_worker_count = std::thread::hardware_concurrency();
 
   const auto chunks_per_worker = static_cast<size_t>(std::ceil(static_cast<double>(chunk_count) / concurrent_worker_count));
-  // const auto sample_chunk_count_per_worker = std::max(size_t{1}, chunks_per_worker / 10);
+  const auto sample_chunk_count_per_worker = std::max(size_t{1}, chunks_per_worker / 10);
+
+  
 
   auto processed_chunks = std::vector<std::atomic_bool>(chunk_count);
+  auto queue = tbb::concurrent_priority_queue<std::pair<ChunkID, size_t>, compare_f>{};
+
+  queue.emplace(ChunkID{5}, 10);
+  queue.emplace(ChunkID{7}, 5);
+  queue.emplace(ChunkID{17}, 17);
+
+
 
   std::default_random_engine random_engine(17);
   std::uniform_int_distribution<uint32_t> uniform_distribution(0, chunks_per_worker);
@@ -388,6 +405,16 @@ void benchmark_progressive_martin_scan(auto& result_counts_and_timings, const au
 
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
 
+  // Jobs as many as cores. Each job:
+  // - has a range of chunks to scan (first 10% are random chunks to scan)
+  // - has an atomic bool list to ensure no chunks are scanned twice
+  // - global: tbb::concurrent_priority_queue with largest chunk counts
+  // - global: counter of chunks done per "job"
+  // - explore:
+  //   - just work on list (count added to queue)
+  // - exploit:
+  //   - pop from queue and process neighbors (if already done, skip)
+  // - when job is "done", check which job needs help to process (id % 2 tells if we serach bitlist from beginning or end).
 }
 
 }  // namespace
