@@ -32,8 +32,6 @@ int main() {
   // constexpr auto SCALE_FACTOR = 5.0f;
   auto benchmark_config = BenchmarkConfig::get_default_config();
   TPCHTableGenerator(SCALE_FACTOR, ClusteringConfiguration::None, std::make_shared<BenchmarkConfig>(benchmark_config))
-      TPCHTableGenerator(SCALE_FACTOR, ClusteringConfiguration::None,
-                         std::make_shared<BenchmarkConfig>(benchmark_config))
           .generate_and_store();
 
   auto runs = size_t{0};

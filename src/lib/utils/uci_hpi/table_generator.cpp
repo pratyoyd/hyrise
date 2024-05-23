@@ -152,12 +152,7 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const DataDistribution scan_
   }
   std::cerr << "Generated table in " << timer.lap_formatted() << ".\n";
 
-  // const auto chunk_count = table->chunk_count();
-  // for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
-  //   table->get_chunk(chunk_id)->set_immutable();
-  // }
   table->last_chunk()->set_immutable();
-
   ChunkEncoder::encode_all_chunks(table, SegmentEncodingSpec{EncodingType::Dictionary});
   std::cerr << "Encoded table with " << table->row_count() << " rows in " << timer.lap_formatted() << ".\n";
 

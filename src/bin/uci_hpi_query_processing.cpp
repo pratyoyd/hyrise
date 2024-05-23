@@ -2,12 +2,14 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <random>
 #include <string>
 #include <vector>
 
-#include <oneapi/tbb/concurrent_priority_queue.h>
 #include <boost/algorithm/string.hpp>
+#include <oneapi/tbb/concurrent_priority_queue.h>
 
 #include "cxxopts.hpp"
 
@@ -33,16 +35,47 @@
 namespace {
 
 using namespace hyrise;
-constexpr auto MEASUREMENT_COUNT = size_t{1};
 
-class compare_f {
+constexpr auto MEASUREMENT_COUNT = size_t{10};
+using SizeRuntimeVector = std::vector<std::pair<size_t, std::chrono::nanoseconds>>;
+
+class compare_pair_second {
  public:
-  bool operator()(const auto& lhs, const auto&rhs) const {
-        return lhs.second < rhs.second;
-    }
+  bool operator()(const auto& lhs, const auto& rhs) const {
+    return lhs.second < rhs.second;
+  }
 };
 
-void scan_single_chunk_and_store_result(const auto& table, const auto& predicate, auto& results, const ChunkID chunk_id, const auto start) {
+struct AnalyzeResult {
+  size_t result_tuple_count{};
+  double progressive_costs{};
+  std::chrono::nanoseconds overall_runtime_ns{};
+};
+
+AnalyzeResult analyze_and_write_results(const SizeRuntimeVector& results, size_t measurement_id, std::string name,
+                                        std::ofstream& csv_output_file) {
+  auto result = AnalyzeResult{};
+
+  Assert(!results.empty(), "Did not expect empty results.");
+
+  result.overall_runtime_ns = results[0].second;
+
+  for (const auto& [result_count, runtime] : results) {
+    result.result_tuple_count += result_count;
+    result.overall_runtime_ns = std::max(result.overall_runtime_ns, runtime);
+    result.progressive_costs += static_cast<double>(result_count * runtime.count());
+
+    csv_output_file << std::format("\"{}\",{},{},{}\n", name, measurement_id, result_count,
+                                   std::chrono::duration<int, std::nano>{runtime}.count());
+  }
+
+  return result;
+}
+
+size_t scan_single_chunk_and_store_result(const auto& table, const auto& predicate, auto& results,
+                                          const ChunkID chunk_id, const auto start) {
+  // std::cerr << std::format("Scan chunk #{} (table has {} chunks)\n.", static_cast<size_t>(chunk_id), static_cast<size_t>(table->chunk_count()));
+
   // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
   auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
 
@@ -55,8 +88,10 @@ void scan_single_chunk_and_store_result(const auto& table, const auto& predicate
   table_scan->execute();
 
   const auto table_scan_end = std::chrono::system_clock::now();
-  results[chunk_id] = {table_scan->get_output()->row_count(),
-                      std::chrono::duration<int, std::nano>{table_scan_end - start}};
+  const auto row_count = table_scan->get_output()->row_count();
+  results[chunk_id] = {row_count, std::chrono::duration<int, std::nano>{table_scan_end - start}};
+
+  return row_count;
 }
 
 cxxopts::Options get_server_cli_options() {
@@ -127,13 +162,15 @@ auto pull_arm(int arm, const auto& table, auto jobs, std::vector<int>& next_to_e
     }
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
   }
-  std::cout << chunk_id << " ";
+  // std::cout << chunk_id << " ";
 
   return reward;
 }
 
-void ExploreExploit(auto& result_counts_and_timings, const auto& table, const auto& predicate) {
+SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate) {
   const auto chunk_count = table->chunk_count();
+  auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
+
   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
   jobs.reserve(chunk_count);
 
@@ -155,7 +192,7 @@ void ExploreExploit(auto& result_counts_and_timings, const auto& table, const au
     if (i == num_arms - 1)
       partition_start_and_end[i] = {(i * chunk_count) / num_arms, chunk_count - 1};
     next_to_explore[i] = (i * chunk_count) / num_arms;
-    std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
+    // std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
   }
 
   auto end = false;
@@ -201,6 +238,7 @@ void ExploreExploit(auto& result_counts_and_timings, const auto& table, const au
       // }
     }
   }
+  return result_counts_and_timings;
 }
 
 auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
@@ -238,13 +276,15 @@ auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_t
   return reward;
 }  // Update average reward for the selected arm
 
-void ExploreExploitModular(auto& result_counts_and_timings, const auto& table, const auto& predicate) {
+SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate) {
   const auto chunk_count = table->chunk_count();
+  auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
+
   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
   jobs.reserve(chunk_count);
 
   //  This is the implementation of the  2nd explore-exploit scan. This partitions the data "modularly". Firstly we try a naive explore-exploit with 5 partitions.
-    //  We will try to give more precedence to explore initially and exploit later on.
+  //  We will try to give more precedence to explore initially and exploit later on.
   auto num_arms = size_t{15};
   auto exploration_factor = double{0.3};
   auto rewards = std::vector<double>(num_arms, 0.0);
@@ -260,7 +300,6 @@ void ExploreExploitModular(auto& result_counts_and_timings, const auto& table, c
     next_to_explore[i] = i;
     // std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
   }
-
 
   auto end = false;
   auto i = size_t{0};
@@ -329,11 +368,13 @@ void ExploreExploitModular(auto& result_counts_and_timings, const auto& table, c
       }
     }
   }
+
+  return result_counts_and_timings;
 }
 
-void benchmark_traditional_and_progressive_scan(auto& result_counts_and_timings, const auto& table,
-                                                const auto& predicate) {
+SizeRuntimeVector benchmark_traditional_and_progressive_scan(const auto& table, const auto& predicate) {
   const auto chunk_count = table->chunk_count();
+  auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
 
   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
   jobs.reserve(chunk_count);
@@ -350,71 +391,195 @@ void benchmark_traditional_and_progressive_scan(auto& result_counts_and_timings,
     }));
   }
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+  return result_counts_and_timings;
 }
 
-void benchmark_progressive_martin_scan(auto& result_counts_and_timings, const auto& table,
-                                       const auto& predicate) {
+SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const auto& predicate) {
+  // const auto row_count = table->row_count();
   const auto chunk_count = table->chunk_count();
+  auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
+
   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
   jobs.reserve(chunk_count);
 
   // Even though we might have less cores (passed via `--cores`), just use all of them. Keep it simple for now.
   const auto concurrent_worker_count = std::thread::hardware_concurrency();
 
-  const auto chunks_per_worker = static_cast<size_t>(std::ceil(static_cast<double>(chunk_count) / concurrent_worker_count));
-  const auto sample_chunk_count_per_worker = std::max(size_t{1}, chunks_per_worker / 10);
-
-  
+  const auto chunks_per_worker =
+      static_cast<size_t>(std::ceil(static_cast<double>(chunk_count) / concurrent_worker_count));
+  const auto sample_chunk_count_per_worker = std::max(size_t{3}, chunks_per_worker / 20);
 
   auto processed_chunks = std::vector<std::atomic_bool>(chunk_count);
-  auto queue = tbb::concurrent_priority_queue<std::pair<ChunkID, size_t>, compare_f>{};
+  auto queue = tbb::concurrent_priority_queue<std::pair<ChunkID, size_t>, compare_pair_second>{};
 
-  queue.emplace(ChunkID{5}, 10);
-  queue.emplace(ChunkID{7}, 5);
-  queue.emplace(ChunkID{17}, 17);
+  auto global_chunks_processed = std::atomic<uint32_t>{0};
 
+  // queue.emplace(ChunkID{5}, 10);
+  // queue.emplace(ChunkID{7}, 5);
+  // queue.emplace(ChunkID{17}, 17);
 
+  // auto a = std::pair<ChunkID, size_t>{};
+  // while (queue.try_pop(a)) {
+  //   std::cout << a.first << " and " << a.second << "\n";
+  // }
 
-  std::default_random_engine random_engine(17);
-  std::uniform_int_distribution<uint32_t> uniform_distribution(0, chunks_per_worker);
+  // auto random_device = std::random_device{};
+  // auto random_engine = std::default_random_engine{random_device()};
+  auto random_engine = std::default_random_engine{18};
+  auto sampling_distribution = std::uniform_int_distribution<uint32_t>(0, chunks_per_worker);
+  auto stealing_distribution = std::uniform_int_distribution<uint32_t>(0, chunk_count - 1);
+
+  const auto start = std::chrono::system_clock::now();
 
   for (auto worker_id = size_t{0}; worker_id < concurrent_worker_count; ++worker_id) {
-    // jobs.emplace_back(std::make_shared<JobTask>([&, worker_id]() {
+    jobs.emplace_back(std::make_shared<JobTask>([&, worker_id]() {
+      const auto start_chunk_id = ChunkID{worker_id * chunks_per_worker};
+      const auto end_chunk_id = ChunkID{
+          static_cast<ChunkID::base_type>(std::min(size_t{chunk_count - 1}, (worker_id + 1) * chunks_per_worker - 1))};
+      const auto local_chunks_to_process = end_chunk_id - start_chunk_id + 1;
+      auto max_consecutive_steal_attempts = size_t{2};
+      auto scan_start = start_chunk_id;  // Updated counter to avoid checking all local chunks over and over again.
 
-    //   const auto start_chunk_id = ChunkID{worker_id * chunks_per_worker};
-    //   const auto end_chunk_id = ChunkID{static_cast<ChunkID::base_type>(std::min(size_t{chunk_count}, (worker_id + 1) * chunks_per_worker - 1))};
-    //   const auto chunks_to_process = end_chunk_id - start_chunk_id + 1;
+      auto sample_chunk_count = std::min(static_cast<size_t>(end_chunk_id - start_chunk_id), sample_chunk_count_per_worker);
+      auto sample_chunk_ids = std::vector<ChunkID>{};
+      sample_chunk_ids.reserve(sample_chunk_count);
+      for (auto round = size_t{0}; round < sample_chunk_count; ++round) {
+        sample_chunk_ids.emplace_back(std::min(chunk_count - 1, start_chunk_id + sampling_distribution(random_engine)));
+      }
 
-    //   auto sample_chunk_ids = std::vector<ChunkID>{};
-    //   sample_chunk_ids.reserve(sample_chunk_count_per_worker);
-    //   for (auto round = size_t{0}; round < sample_chunk_count_per_worker; ++round) {
-    //     sample_chunk_ids.emplace_back(start_chunk_id + uniform_distribution(random_engine));
-    //     // std::cout << std::format("I run from {} to {} and add the random chunk id {}\n", static_cast<size_t>(start_chunk_id), static_cast<size_t>(end_chunk_id), );
-    //   }
+      auto local_chunks_processed = ChunkID{0};
+      [[maybe_unused]] auto avg_result_tuples_per_chunk = float{0.0};
+      auto bool_true = true;
 
-    //   auto chunks_processed = ChunkID{0};
-    //   while (chunks_processed < chunks_to_process) {
-    //     if (chunks_processed % 2 == 0) {
-    //       // Process assigned chunks.
-    //     } else {
-    //       // Pick from global queue.
-    //     }
-    //   }
-    // }));
+      // Process assigned chunks.
+      while (!sample_chunk_ids.empty()) {
+        const auto chunk_id = sample_chunk_ids.back();
+        sample_chunk_ids.pop_back();
+
+        auto bool_false_tmp = false;
+        const auto exchanged = processed_chunks[chunk_id].compare_exchange_strong(bool_false_tmp, bool_true);
+        if (!exchanged) {
+          continue;
+        }
+
+        // std::cout << std::format("Worker {} does a sample of chunk #{}.\n", static_cast<size_t>(worker_id),
+        //                          static_cast<size_t>(chunk_id));
+        const auto row_count =
+            scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, chunk_id, start);
+        queue.emplace(chunk_id, row_count);
+        avg_result_tuples_per_chunk += static_cast<float>(row_count);
+        ++local_chunks_processed;
+        ++global_chunks_processed;
+        continue;
+      }
+
+      // Used to check if exploiting is "worth it".
+      avg_result_tuples_per_chunk /= static_cast<float>(chunk_count);
+
+      for (auto loop_id = size_t{0}; global_chunks_processed < chunk_count; ++loop_id) {
+        if (loop_id % 2 == 0) {
+          // if (local_chunks_processed == local_chunks_to_process) {
+          //   // Skip local processing if we have processed all local chunks.
+          //   continue;
+          // }
+
+          // All samples done, check local chunks.
+          for (auto chunk_id = scan_start; chunk_id <= end_chunk_id; ++chunk_id, ++scan_start) {
+            auto bool_false_tmp = false;
+            const auto exchanged = processed_chunks[chunk_id].compare_exchange_strong(bool_false_tmp, bool_true);
+            if (!exchanged) {
+              // std::cout << std::format("Skip local scan of chunk #{}.\n", static_cast<size_t>(chunk_id));
+              continue;
+            }
+
+            // std::cout << std::format("Worker {} does a local scan of chunk #{}.\n", static_cast<size_t>(worker_id),
+            //                          static_cast<size_t>(chunk_id));
+            const auto row_count =
+                scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, chunk_id, start);
+            queue.emplace(chunk_id, row_count);
+            ++local_chunks_processed;
+            ++global_chunks_processed;
+
+            // We break to allow for exploiting (or stealing) in the next round.
+            ++scan_start;
+            break;
+          }
+
+          if (local_chunks_processed < local_chunks_to_process) {
+            continue;
+          }
+
+          // We processed all sample chunks and found no local chunk to process. Start stealing.
+          const auto start_chunk_id = stealing_distribution(random_engine);
+          // std::cout << std::format("Trying to steal chunk #{}.\n", static_cast<size_t>(start_chunk_id));
+          auto loop = size_t{0};
+          max_consecutive_steal_attempts =
+              std::min(max_consecutive_steal_attempts * 2, static_cast<size_t>(chunk_count));
+          for (const auto& direction_multiplier : {1, -1}) {
+            // We limit the number of consecutive steal attempts to still exploit to some degree. But since we randomize
+            // the starting position for stealing, we could eventually spin for quite some time just to find the "last
+            // missing" chunks. Thus, we steadily increase the number of max. consecutive steal attempts.
+            for (auto next_chunk_id = ChunkID{start_chunk_id};
+                 next_chunk_id >= 0 && next_chunk_id < chunk_count && loop < max_consecutive_steal_attempts;
+                 next_chunk_id += (direction_multiplier * 1), ++loop) {
+              // std::cout << std::format("Steal attempt for {} (loop: {}, max_consecutive_steal_attempts: {}).\n", static_cast<size_t>(next_chunk_id), loop, max_consecutive_steal_attempts);
+              auto bool_false_tmp = false;
+              const auto exchanged = processed_chunks[next_chunk_id].compare_exchange_strong(bool_false_tmp, bool_true);
+              if (!exchanged) {
+                continue;
+              }
+
+              // std::cout << std::format("Worker {} does a stealing scan of chunk #{}.\n", static_cast<size_t>(worker_id),
+              //                          static_cast<size_t>(next_chunk_id));
+              const auto row_count =
+                  scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, next_chunk_id, start);
+              queue.emplace(next_chunk_id, row_count);
+              ++global_chunks_processed;
+            }
+          }
+        } else {
+          // Pick from global queue.
+          auto best_processed_chunk = std::pair<ChunkID, size_t>{};
+          if (queue.try_pop(best_processed_chunk)) {
+            const auto best_chunk_id = static_cast<int64_t>(best_processed_chunk.first);
+            // std::cout << std::format("Best chunk id is: {}\n", best_chunk_id);
+            for (const auto chunk_id_to_test : {best_chunk_id - 1, best_chunk_id + 1}) {
+              if (chunk_id_to_test < 0 || chunk_id_to_test >= static_cast<int64_t>(chunk_count)) {
+                continue;
+              }
+
+              auto bool_false_tmp = false;
+              auto exchanged = processed_chunks[chunk_id_to_test].compare_exchange_strong(bool_false_tmp, bool_true);
+              if (exchanged) {
+                // std::cout << std::format("Worker {} does an exploit scan of chunk #{}.\n",
+                //                          static_cast<size_t>(worker_id), chunk_id_to_test);
+                const auto row_count_exploiting = scan_single_chunk_and_store_result(
+                    table, predicate, result_counts_and_timings,
+                    ChunkID{static_cast<ChunkID::base_type>(chunk_id_to_test)}, start);
+                queue.emplace(chunk_id_to_test, row_count_exploiting);
+                ++global_chunks_processed;
+
+                if (chunk_id_to_test >= start_chunk_id && chunk_id_to_test <= end_chunk_id) {
+                  // Track if exploited chunk is local chunk. To start chunk stealing, we first want to proceed all of
+                  // our local chunks.
+                  ++local_chunks_processed;
+                }
+
+                // if (static_cast<float>(row_count_exploiting) < (static_cast<float>(row_count) / static_cast<float>(chunk_count)) * 1.5) {
+                //   // We 
+                //   ++loop_id;
+                // }
+              }
+            }
+          }
+        }
+      }
+      // std::cout << std::format("Worker {} is done.\n", static_cast<size_t>(worker_id));
+    }));
   }
 
   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
-
-  // Jobs as many as cores. Each job:
-  // - has a range of chunks to scan (first 10% are random chunks to scan)
-  // - has an atomic bool list to ensure no chunks are scanned twice
-  // - global: tbb::concurrent_priority_queue with largest chunk counts
-  // - global: counter of chunks done per "job"
-  // - explore:
-  //   - just work on list (count added to queue)
-  // - exploit:
-  //   - pop from queue and process neighbors (if already done, skip)
-  // - when job is "done", check which job needs help to process (id % 2 tells if we serach bitlist from beginning or end).
+  return result_counts_and_timings;
 }
 
 }  // namespace
@@ -461,9 +626,10 @@ int main(int argc, char* argv[]) {
     Hyrise::get().storage_manager.add_table("benchmark_data", uci_hpi::load_ny_taxi_data_to_table("full"));
     // Hyrise::get().storage_manager.add_table("benchmark_data", uci_hpi::load_ny_taxi_data_to_table("1000"));
   } else if (benchmark_data_str == "synthetic") {
-    // Hyrise::get().storage_manager.add_table("benchmark_data", uci_hpi::load_synthetic_data_to_table(uci_hpi::DataDistribution::EqualWaves, 100'000'000));
     Hyrise::get().storage_manager.add_table(
-        "benchmark_data", uci_hpi::load_synthetic_data_to_table(uci_hpi::DataDistribution::EqualWaves, 10'000'000));
+        "benchmark_data", uci_hpi::load_synthetic_data_to_table(uci_hpi::DataDistribution::EqualWaves, 100'000'000));
+    // Hyrise::get().storage_manager.add_table(
+    //     "benchmark_data", uci_hpi::load_synthetic_data_to_table(uci_hpi::DataDistribution::EqualWaves, 10'000'000));
   } else {
     Fail("Unexpected value for 'benchmark_data'.");
   }
@@ -471,8 +637,6 @@ int main(int argc, char* argv[]) {
   Assert(Hyrise::get().storage_manager.has_table("benchmark_data"), "Benchmark data not loaded correctly.");
 
   const auto table = Hyrise::get().storage_manager.get_table("benchmark_data");
-  const auto chunk_count = table->chunk_count();
-
   const auto column_id = table->column_id_by_name("Trip_Pickup_DateTime");
   const auto column = pqp_column_(column_id, DataType::String, true, "");
   const auto predicate = between_inclusive_(column, value_("2009-02-17 00:00:00"), value_("2009-02-23 23:59:59"));
@@ -486,95 +650,51 @@ int main(int argc, char* argv[]) {
   auto csv_output_file = std::ofstream(csv_file_name);
   csv_output_file << "SCAN_TYPE,SCAN_ID,ROW_EMITTED,RUNTIME_NS\n";
 
-  for (auto measurement_id = size_t{0}; measurement_id < MEASUREMENT_COUNT; ++measurement_id) {
-    auto result_counts_and_timings = std::vector<std::pair<size_t, std::chrono::nanoseconds>>(chunk_count);
-    auto result_counts_and_timings_EE = std::vector<std::pair<size_t, std::chrono::nanoseconds>>(chunk_count);
-    auto result_counts_and_timings_EEM = std::vector<std::pair<size_t, std::chrono::nanoseconds>>(chunk_count);
+  for (auto measurement_id = size_t{0}; measurement_id < MEASUREMENT_COUNT + 1; ++measurement_id) {
+    const auto result_counts_and_timings_simple = benchmark_traditional_and_progressive_scan(table, predicate);
 
-    ExploreExploit(result_counts_and_timings_EE, table, predicate);
+    auto result_counts_and_timings_martin_prog = benchmark_progressive_martin_scan(table, predicate);
+    auto result_counts_and_timings_EE = ExploreExploit(table, predicate);
+    auto result_counts_and_timings_EEM = ExploreExploitModular(table, predicate);
 
-    ExploreExploitModular(result_counts_and_timings_EEM, table, predicate);
+    // First run is warmup.
+    if (measurement_id == 0) {
+      continue;
+    }
 
-    benchmark_traditional_and_progressive_scan(result_counts_and_timings, table, predicate);
+    const auto simple_analyze_result = analyze_and_write_results(result_counts_and_timings_simple, measurement_id,
+                                                                 "Simple Progressive", csv_output_file);
+    const auto expected_result_count = simple_analyze_result.result_tuple_count;
+    std::cout << std::format("Approach '{:>25}' took {:9.6f} ms (progressive costs: {:20.2f}).\n",
+                             "Traditional Hyrise Scan", static_cast<double>(simple_analyze_result.overall_runtime_ns.count()) / 1'000'1000,
+                             static_cast<double>(simple_analyze_result.overall_runtime_ns.count()) *
+                                 static_cast<double>(simple_analyze_result.result_tuple_count));
+    std::cout << std::format("Approach '{:>25}' took {:9.6f} ms (progressive costs: {:20.2f}).\n", "Simple Progressive",
+                             static_cast<double>(simple_analyze_result.overall_runtime_ns.count()) / 1'000'1000, simple_analyze_result.progressive_costs);
 
-    benchmark_progressive_martin_scan(result_counts_and_timings, table, predicate);
-
-    // This is more or less for fun, right now. Above, we do the "traditional" table scan in Hyrise, but manually and
-    // retend that we would immediately push "ready" chunks to the next pipeline operator. The "traditional" costs below
-    // assume that we yield all tuples at the end at once.
+    // This is more or less for fun, right now. Above, we do the "traditional" table scan in Hyrise, but pretent that we
+    // would immediately push "ready" chunks to the next pipeline operator. The "traditional" costs below assume that we
+    // yield all tuples at the end at once (i.e., the runtime of the last "progressive" chunk).
     // The cost model is `for each tuple: costs += runtime_to_yield_tuple`.
-    auto max_runtime_progressive = result_counts_and_timings[0].second;
+    const auto expected_runtime_traditional_scan = simple_analyze_result.overall_runtime_ns;
 
-    auto costs_traditional_scan =
-        double{0.0};  // TODO: Remove the metric stuff, once we the CSV parsing/plotting works.
-    auto costs_progressive_scan = double{0.0};
-    auto costs_progressive_scan_EE = double{0.0};
-    auto costs_progressive_scan_EEM = double{0.0};
-
-    // We assume the "simple progressive" Hyrise scan does not have any issues and thus assume that it yields the
-    // correct number of output tuples.
-    auto expected_result_count = size_t{0};
-    [[maybe_unused]] int i = 0;
-
-    for (const auto& [result_count, runtime] : result_counts_and_timings) {
-      expected_result_count += result_count;
-      // std::cerr << "Chunk results >> " << expected_result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms) "<<i<<"\n";
-      max_runtime_progressive = std::max(max_runtime_progressive, runtime);
-      costs_traditional_scan += static_cast<double>(result_count);
-      costs_progressive_scan += static_cast<double>(result_count * runtime.count());
-
-      csv_output_file << std::format("Progressive,{},{},{}\n", measurement_id, result_count,
-                                     std::chrono::duration<int, std::nano>{runtime}.count());
-      i++;
+    for (const auto& [name, results] : std::vector<std::pair<std::string, SizeRuntimeVector>>{
+             {"Martin's Scan", result_counts_and_timings_martin_prog},
+             {"Explore-Exploit", result_counts_and_timings_EE},
+             {"Explore-Exploit Modular", result_counts_and_timings_EEM},
+         }) {
+      const auto analyze_result = analyze_and_write_results(results, measurement_id, name, csv_output_file);
+      std::cout << std::format("Approach '{:>25}' took {:9.6f} ms (progressive costs: {:20.2f}).\n", name,
+                               static_cast<double>(analyze_result.overall_runtime_ns.count()) / 1'000'1000, analyze_result.progressive_costs);
+      if (analyze_result.result_tuple_count != expected_result_count) {
+        std::cerr << "ERROR: approach '" << name << "' yielded an expected result size of "
+                  << analyze_result.result_tuple_count << " rows (expected " << expected_result_count << ").\n";
+      }
     }
-    std::cerr << "Progressive Total Runtime "
-              << std::chrono::duration<double, std::micro>{max_runtime_progressive}.count() << " us.\n";
-
-    i = 0;
-    auto ee_result_count = size_t{0};
-    auto max_runtime = result_counts_and_timings_EE[0].second;
-    for (const auto& [result_count, runtime] : result_counts_and_timings_EE) {
-      ee_result_count += result_count;
-      max_runtime = std::max(max_runtime, runtime);
-      // std::cerr << "Chunk results EE >> " << ee_result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms) "<<i<<"\n";
-
-      costs_progressive_scan_EE += static_cast<double>(result_count * runtime.count());
-      //std::cerr <<"EE " + result_count << '\n'<<" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
-      i++;
-    }
-    if (ee_result_count != expected_result_count) {
-      std::cerr << "ERROR: EE yielded an expected result size of " << ee_result_count << " rows (expected "
-                << expected_result_count << ")\n";
-    }
-    std::cerr << "EE Total Runtime " << std::chrono::duration<double, std::micro>{max_runtime}.count() << " us.\n";
-
-    auto eem_result_count = size_t{0};
-    max_runtime = result_counts_and_timings_EEM[0].second;
-    for (const auto& [result_count, runtime] : result_counts_and_timings_EEM) {
-      eem_result_count += result_count;
-      max_runtime = std::max(max_runtime, runtime);
-      //std::cerr << "Chunk results EEM >> " << eem_result_count << " (" << static_cast<double>(runtime.count()) / 1000 << " ms) "<<i<<"\n";
-
-      costs_progressive_scan_EEM += static_cast<double>(result_count * runtime.count());
-      //std::cerr << "EEM "+ result_count << '\n'<<" & " << std::chrono::duration<double, std::micro>{runtime - start}.count() << " - max: " << max_runtime << '\n';
-    }
-    if (eem_result_count != expected_result_count) {
-      std::cerr << "ERROR: EEM yielded an expected result size of " << eem_result_count << " rows (expected "
-                << expected_result_count << ")\n";
-    }
-    std::cerr << "EEM  Total Runtime " << std::chrono::duration<double, std::micro>{max_runtime}.count() << " us.\n";
-
-    std::cerr << std::format("costs_traditional_scan:     {:16.2f}\n",
-                             costs_traditional_scan * static_cast<double>(max_runtime_progressive.count()));
-    std::cerr << std::format("costs_progressive_scan:     {:16.2f}\n", costs_progressive_scan);
-    std::cerr << std::format("costs_progressive_scan_EE:  {:16.2f}\n", costs_progressive_scan_EE);
-    std::cerr << std::format("costs_progressive_scan_EEM: {:16.2f}\n", costs_progressive_scan_EEM);
-    std::cerr << "Traditional scan took " << std::chrono::duration<double, std::micro>{max_runtime_progressive}.count()
-              << " us.\n";
 
     // Write single line for "traditional" scan.
-    csv_output_file << std::format("Operator-At-Once,{},{},{}\n", measurement_id, expected_result_count,
-                                   std::chrono::duration<int, std::nano>{max_runtime_progressive}.count());
+    csv_output_file << std::format("\"Traditional Hyrise Scan\",{},{},{}\n", measurement_id, expected_result_count,
+                                   std::chrono::duration<int, std::nano>{expected_runtime_traditional_scan}.count());
   }
 
   csv_output_file.close();
