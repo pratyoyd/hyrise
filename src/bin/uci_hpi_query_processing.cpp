@@ -140,18 +140,8 @@ auto pull_arm(int arm, const auto& table, auto jobs, std::vector<int>& next_to_e
     int cores = 0;
     while (cores < 10 && next_to_explore[arm] <= partition_start_and_end[arm].second) {
       jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-        // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-        auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
-
-        auto single_chunk_table =
-            std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
-        auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-        table_wrapper->execute();
-
-        auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-        table_scan->execute();
-        reward = table_scan->get_output()->row_count();
-        result_counts_and_timings_EE[i] = {reward, std::chrono::system_clock::now() - start};
+        scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_EE, chunk_id, start);
+       
         i++;
         counts[arm]++;
         rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
