@@ -35,7 +35,6 @@
 namespace {
 
 using namespace hyrise;
-
 constexpr auto MEASUREMENT_COUNT = size_t{10};
 using SizeRuntimeVector = std::vector<std::pair<size_t, std::chrono::nanoseconds>>;
 
