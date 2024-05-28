@@ -46,6 +46,13 @@ class compare_pair_second {
   }
 };
 
+class compare_pair_second_desc {
+ public:
+  bool operator()(const auto& lhs, const auto& rhs) const {
+    return lhs.second > rhs.second;
+  }
+};
+
 struct AnalyzeResult {
   size_t result_tuple_count{};
   double progressive_costs{};
@@ -141,11 +148,11 @@ auto pull_arm(int arm, const auto& table, auto jobs, std::vector<int>& next_to_e
     auto cores_iterator = size_t{0};
     while (cores_iterator < core_count && next_to_explore[arm] <= partition_start_and_end[arm].second) {
       jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-        scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_EE, chunk_id, start);
+        reward = scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_EE, chunk_id, start);
        
         i++;
         counts[arm]++;
-        rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
+        rewards[arm] = ((double)reward + rewards[arm]*(counts[arm] -1)) / counts[arm];
       }));
       chunk_id++;
       cores_iterator++;
@@ -194,6 +201,7 @@ SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate, const
   while (end == false) {
     auto arm = int32_t{};
     // std::cout<<" "<<num_arms<<" ";
+
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
     } else {
@@ -269,6 +277,7 @@ auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_t
    auto reward = int64_t{};
   auto chunk_id = ChunkID{next_to_explore[arm]};
   //std::cout<< chunk_id<<" " ;
+
   if (chunk_id >= chunk_count) {
     reward = -1;  //arm exhausted
     return reward;
@@ -276,11 +285,11 @@ auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_t
     auto cores_iterator = size_t{0};
     while (cores_iterator < core_count && next_to_explore[arm] <= partition_start_and_end[arm].second) {
       jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-        scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_EEM, chunk_id, start);
+        reward = scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_EEM, chunk_id, start);
        
         i++;
         counts[arm]++;
-        rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
+        rewards[arm] = ((double)reward + rewards[arm]*(counts[arm] -1)) / counts[arm];
       }));
       chunk_id += num_arms;
       cores_iterator++;
@@ -303,7 +312,7 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
   //  This is the implementation of the  2nd explore-exploit scan. This partitions the data "modularly". Firstly we try a naive explore-exploit with 5 partitions.
   //  We will try to give more precedence to explore initially and exploit later on.
   auto num_arms = size_t{15};
-  auto exploration_factor = double{0.3};
+  auto exploration_factor = double{0.2};
   auto rewards = std::vector<double>(num_arms, 0.0);
   auto counts = std::vector<int>(num_arms, 0);
   auto next_to_explore = std::vector<int>(num_arms, 0);
@@ -335,11 +344,16 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
   while (end == false) {
     auto arm = int32_t{};
     // std::cout<<" "<<num_arms<<" ";
+    if(i < 15){
+      arm =i;   //explore each arm initially
+    }
+    else{
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
     } else {
       arm = select_arm_with_highest_reward(rewards);  // Exploit
     }
+  }
 
     std::vector<int>::iterator it;
     int do_we_pull_arm = 1;
@@ -400,7 +414,7 @@ SizeRuntimeVector PerfectScan(const auto& table, const auto& predicate) {
     chunk_sequence.emplace_back(i,result_count);
     i++;
   }
-   std::sort(chunk_sequence.begin(), chunk_sequence.end(), compare_pair_second());
+   std::sort(chunk_sequence.begin(), chunk_sequence.end(), compare_pair_second_desc());
    
    auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
     jobs.reserve(chunk_count);
