@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
@@ -35,12 +36,10 @@
 namespace {
 
 using namespace hyrise;
-
 constexpr auto MEASUREMENT_COUNT = size_t{10};
 // constexpr auto MEASUREMENT_COUNT = size_t{1};
 constexpr auto DEBUG_PRINT = false;
 // constexpr auto DEBUG_PRINT = true;
-
 
 using SizeRuntimeVector = std::vector<std::pair<size_t, std::chrono::nanoseconds>>;
 
@@ -66,6 +65,7 @@ AnalyzeResult analyze_and_write_results(const SizeRuntimeVector& results, size_t
   result.overall_runtime_ns = results[0].second;
 
   for (const auto& [result_count, runtime] : results) {
+    //std::cout<<result_count<<" "<<runtime/1000<<"\n";
     result.result_tuple_count += result_count;
     result.overall_runtime_ns = std::max(result.overall_runtime_ns, runtime);
     result.progressive_costs += static_cast<double>(result_count * runtime.count());
@@ -80,6 +80,8 @@ AnalyzeResult analyze_and_write_results(const SizeRuntimeVector& results, size_t
 size_t scan_single_chunk_and_store_result(const auto& table, const auto& predicate, auto& results,
                                           const ChunkID chunk_id, const auto start) {
   // std::cerr << std::format("Scan chunk #{} (table has {} chunks)\n.", static_cast<size_t>(chunk_id), static_cast<size_t>(table->chunk_count()));
+
+  Assert(table->chunk_count() == results.size(), "Result vector needs to be pre-allocated.");
 
   // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
   auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
@@ -133,7 +135,7 @@ int select_arm_with_highest_reward(const std::vector<double>& rewards) {
 
 auto pull_arm(int arm, const auto& table, auto jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
               const auto& predicate, auto& result_counts_and_timings_EE, std::vector<int>& counts,
-              std::vector<double>& rewards, auto& i, auto start) {
+              std::vector<double>& rewards, auto& i, auto start, const auto& core_count) {
   // This is the actual scan for EE
 
   auto reward = int64_t{};
@@ -142,27 +144,17 @@ auto pull_arm(int arm, const auto& table, auto jobs, std::vector<int>& next_to_e
     reward = -1;  //arm exhausted
     return reward;
   } else {
-    int cores = 0;
-    while (cores < 10 && next_to_explore[arm] <= partition_start_and_end[arm].second) {
+    auto cores_iterator = size_t{0};
+    while (cores_iterator < core_count && next_to_explore[arm] <= partition_start_and_end[arm].second) {
       jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-        // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-        auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
+        reward = scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_EE, chunk_id, start);
 
-        auto single_chunk_table =
-            std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
-        auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-        table_wrapper->execute();
-
-        auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-        table_scan->execute();
-        reward = table_scan->get_output()->row_count();
-        result_counts_and_timings_EE[i] = {reward, std::chrono::system_clock::now() - start};
         i++;
         counts[arm]++;
-        rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
+        rewards[arm] = ((double)reward + rewards[arm] * (counts[arm] - 1)) / counts[arm];
       }));
       chunk_id++;
-      cores++;
+      cores_iterator++;
       next_to_explore[arm] = chunk_id;
     }
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
@@ -172,7 +164,7 @@ auto pull_arm(int arm, const auto& table, auto jobs, std::vector<int>& next_to_e
   return reward;
 }
 
-SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate) {
+SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate, const auto& core_count) {
   const auto chunk_count = table->chunk_count();
   auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
 
@@ -207,6 +199,7 @@ SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate) {
   while (end == false) {
     auto arm = int32_t{};
     // std::cout<<" "<<num_arms<<" ";
+
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
     } else {
@@ -222,7 +215,7 @@ SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate) {
     }
     if (do_we_pull_arm == 1) {  //if arm is not exhausted
       long reward = pull_arm(arm, table, jobs, next_to_explore, partition_start_and_end, predicate,
-                             result_counts_and_timings, counts, rewards, i, start);
+                             result_counts_and_timings, counts, rewards, i, start, core_count);
       // std::cout<<reward<<"\n";
       if (reward == -1) {  //arm is exhausted
         rewards[arm] = 0;  //arm has no more reward to give
@@ -247,41 +240,67 @@ SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate) {
 }
 
 auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
-                  auto predicate, int num_partitions, auto chunk_count) {
+                  auto predicate, auto& result_counts_and_timings_EEM, std::vector<int>& counts,
+                  std::vector<double>& rewards, auto& i, auto start, int num_arms, auto chunk_count,
+                  const auto& core_count) {
   // This is the actual scan for EEM
+
+  // auto reward = int64_t{};
+  // auto chunk_id = ChunkID{next_to_explore[arm]};
+  // // std::cout << chunk_id << " ";
+  // if (ChunkID{next_to_explore[arm]} >= chunk_count) {
+  //   reward = -1;
+  //   return reward;
+  // } else {
+  //   jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+  //     // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
+  //     auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
+
+  //     auto single_chunk_table =
+  //         std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
+  //     auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
+  //     table_wrapper->execute();
+
+  //     auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
+  //     table_scan->execute();
+
+  //     reward = table_scan->get_output()->row_count();
+  //   }));
+  //   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+  // }
+
+  // chunk_id += num_partitions;
+
+  // next_to_explore[arm] = chunk_id;
 
   auto reward = int64_t{};
   auto chunk_id = ChunkID{next_to_explore[arm]};
-  // std::cout << chunk_id << " ";
-  if (ChunkID{next_to_explore[arm]} >= chunk_count) {
-    reward = -1;
+  //std::cout<< chunk_id<<" " ;
+
+  if (chunk_id >= chunk_count) {
+    reward = -1;  //arm exhausted
     return reward;
   } else {
-    jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-      // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-      auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
+    auto cores_iterator = size_t{0};
+    while (cores_iterator < core_count && next_to_explore[arm] <= partition_start_and_end[arm].second) {
+      jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+        reward = scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_EEM, chunk_id, start);
 
-      auto single_chunk_table =
-          std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
-      auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-      table_wrapper->execute();
-
-      auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-      table_scan->execute();
-
-      reward = table_scan->get_output()->row_count();
-    }));
+        i++;
+        counts[arm]++;
+        rewards[arm] = ((double)reward + rewards[arm] * (counts[arm] - 1)) / counts[arm];
+      }));
+      chunk_id += num_arms;
+      cores_iterator++;
+      next_to_explore[arm] = chunk_id;
+    }
     Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
   }
-
-  chunk_id += num_partitions;
-
-  next_to_explore[arm] = chunk_id;
 
   return reward;
 }  // Update average reward for the selected arm
 
-SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate) {
+SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate, const auto& core_count) {
   const auto chunk_count = table->chunk_count();
   auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
 
@@ -291,7 +310,7 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
   //  This is the implementation of the  2nd explore-exploit scan. This partitions the data "modularly". Firstly we try a naive explore-exploit with 5 partitions.
   //  We will try to give more precedence to explore initially and exploit later on.
   auto num_arms = size_t{15};
-  auto exploration_factor = double{0.3};
+  auto exploration_factor = double{0.2};
   auto rewards = std::vector<double>(num_arms, 0.0);
   auto counts = std::vector<int>(num_arms, 0);
   auto next_to_explore = std::vector<int>(num_arms, 0);
@@ -300,9 +319,16 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
     scans[i] = i;
   }
   auto partition_start_and_end = std::vector<std::pair<int, int>>(num_arms);
+  auto remainder = chunk_count % num_arms;
   for (auto i = size_t{0}; i < num_arms; ++i) {
-    partition_start_and_end[i] = {i, chunk_count - num_arms + i};
-    next_to_explore[i] = i;
+    if (i < remainder) {
+      partition_start_and_end[i] = {i, chunk_count - remainder + i};
+      next_to_explore[i] = i;
+    } else {
+      partition_start_and_end[i] = {i, chunk_count - remainder - num_arms + i};
+      next_to_explore[i] = i;
+    }
+
     // std::cout << " " << partition_start_and_end[i].second << " " << next_to_explore[i] << "\n";
   }
 
@@ -310,40 +336,18 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
   auto i = size_t{0};
   auto completed_arm = std::vector<int>();
   const auto start = std::chrono::system_clock::now();
-  // while (end == false) {
-  //   auto arm = int32_t{};
-  //   if ((double)rand() / RAND_MAX < exploration_factor) {
-  //     arm = select_random_arm(num_arms);  // Explore
-  //   } else {
-  //     arm = select_arm_with_highest_reward(rewards);  // Exploit
-  //   }
 
-  //   long reward =
-  //       pull_arm(arm, table, jobs, next_to_explore, partition_start_and_end, predicate, num_arms, chunk_count);
-  //   // std::cout<<arm<< " "<<reward<<"\n";
-  //   if (reward == -1) {
-  //     scans.erase(scans.begin() + arm);
-  //     counts.erase(counts.begin() + arm);
-  //     rewards.erase(rewards.begin() + arm);
-  //     num_arms = num_arms-1;
-  //     // std::cout << " chunk " << arm << "completed \n";
-  //     if (scans.size() == 0)
-  //       end = true;
-  //     reward = 0;
-  //   }
-
-  //   counts[arm]++;
-  //   rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
-  //   result_counts_and_timings[i] = {reward, std::chrono::system_clock::now() - start};
-  //   i++;
-  // }  // Update average reward for the selected arm
   while (end == false) {
     auto arm = int32_t{};
     // std::cout<<" "<<num_arms<<" ";
-    if ((double)rand() / RAND_MAX < exploration_factor) {
-      arm = select_random_arm(num_arms);  // Explore
+    if (i < 15) {
+      arm = i;  //explore each arm initially
     } else {
-      arm = select_arm_with_highest_reward(rewards);  // Exploit
+      if ((double)rand() / RAND_MAX < exploration_factor) {
+        arm = select_random_arm(num_arms);  // Explore
+      } else {
+        arm = select_arm_with_highest_reward(rewards);  // Exploit
+      }
     }
 
     std::vector<int>::iterator it;
@@ -355,21 +359,16 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
     }
     if (do_we_pull_arm == 1) {  //if arm is not exhausted
       long reward =
-          pull_arm_EEM(arm, table, jobs, next_to_explore, partition_start_and_end, predicate, num_arms, chunk_count);
+          pull_arm_EEM(arm, table, jobs, next_to_explore, partition_start_and_end, predicate, result_counts_and_timings,
+                       counts, rewards, i, start, num_arms, chunk_count, core_count);
       // std::cout<<reward<<"\n";
       if (reward == -1) {  //arm is exhausted
         rewards[arm] = 0;  //arm has no more reward to give
         completed_arm.emplace_back(arm);
-        if (completed_arm.size() == scans.size())
+        if (completed_arm.size() == counts.size())
           end = true;
         reward = 0;
         //std::cout<<" "<<i<<" ";
-      } else {
-        result_counts_and_timings[i] = {reward, std::chrono::system_clock::now() - start};
-        counts[arm]++;
-        rewards[arm] += ((double)reward - rewards[arm]) / counts[arm];
-
-        i++;
       }
     }
   }
@@ -390,6 +389,7 @@ SizeRuntimeVector benchmark_traditional_and_progressive_scan(const auto& table, 
   // I guess, you would reformulate the loop below to process "some" chunks and then decide with which chunks to
   // continue.
   const auto start = std::chrono::system_clock::now();
+
   for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
     jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
       scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, chunk_id, start);
@@ -399,11 +399,41 @@ SizeRuntimeVector benchmark_traditional_and_progressive_scan(const auto& table, 
   return result_counts_and_timings;
 }
 
+SizeRuntimeVector perfect_scan(const auto& table, const auto& predicate) {
+  auto result_counts_and_timings = benchmark_traditional_and_progressive_scan(table, predicate);
+  auto chunk_matches = std::vector<std::pair<ChunkID, size_t>>{};
+
+  const auto chunk_count = table->chunk_count();
+  auto chunk_id = ChunkID{0};
+  for (const auto& [result_count, runtime] : result_counts_and_timings) {
+    chunk_matches.emplace_back(chunk_id, result_count);
+    ++chunk_id;
+  }
+
+  std::sort(chunk_matches.begin(), chunk_matches.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.second > rhs.second;
+  });
+
+  auto result_counts_and_timings_perfect = SizeRuntimeVector(chunk_count);
+  auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+  jobs.reserve(chunk_count);
+  const auto start = std::chrono::system_clock::now();
+
+  for (const auto& [sorted_chunk_id, result_count] : chunk_matches) {
+    auto chunk_id = ChunkID{sorted_chunk_id};
+    jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+      scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings_perfect, chunk_id, start);
+    }));
+  }
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+  return result_counts_and_timings_perfect;
+}
+
 /**
  * General idea:
- *   - we have as many jobs as workers
- *   - whenever a chunk is scanned, we store <ChunkID, number_of_matches> in a global priority queue
- *   - each worker:
+ *   - We have as many jobs as workers.
+ *   - Whenever a chunk is scanned, we store <ChunkID, number_of_matches> in a global priority queue
+ *   - Each worker:
  *     - has an assigned number of chunks (equally distributed) to process (i.e., "local chunks")
  *     - first, each worker scans a random selection of chunks
  *     - then, each worker does explore/exploit:
@@ -672,12 +702,15 @@ int main(int argc, char* argv[]) {
   auto csv_output_file = std::ofstream(csv_file_name);
   csv_output_file << "SCAN_TYPE,SCAN_ID,ROW_EMITTED,RUNTIME_NS\n";
 
+  const auto core_count_EE = cores_to_use == 0 ? size_t{10} : cores_to_use;
+
   for (auto measurement_id = size_t{0}; measurement_id < MEASUREMENT_COUNT + 1; ++measurement_id) {
     const auto result_counts_and_timings_simple = benchmark_traditional_and_progressive_scan(table, predicate);
 
     auto result_counts_and_timings_martin_prog = benchmark_progressive_martin_scan(table, predicate);
-    auto result_counts_and_timings_EE = ExploreExploit(table, predicate);
-    auto result_counts_and_timings_EEM = ExploreExploitModular(table, predicate);
+    auto result_counts_and_timings_EE = ExploreExploit(table, predicate, core_count_EE);
+    auto result_counts_and_timings_EEM = ExploreExploitModular(table, predicate, core_count_EE);
+    auto result_counts_and_timings_perfect = perfect_scan(table, predicate);
 
     // First run is warmup (or we only have one run for debug reasons).
     if (MEASUREMENT_COUNT > 1 && measurement_id == 0) {
@@ -691,6 +724,7 @@ int main(int argc, char* argv[]) {
 
     const auto simple_analyze_result = analyze_and_write_results(result_counts_and_timings_simple, measurement_id,
                                                                  "Simple Progressive", csv_output_file);
+
     const auto expected_result_count = simple_analyze_result.result_tuple_count;
 
     print_result("Traditional Hyrise Scan", simple_analyze_result.overall_runtime_ns.count(),
@@ -710,6 +744,7 @@ int main(int argc, char* argv[]) {
              {"Martin's Scan", result_counts_and_timings_martin_prog},
              {"Explore-Exploit", result_counts_and_timings_EE},
              {"Explore-Exploit Modular", result_counts_and_timings_EEM},
+             {"Perfect Scan", result_counts_and_timings_perfect},
          }) {
       const auto analyze_result = analyze_and_write_results(results, measurement_id, name, csv_output_file);
       std::cout << std::format("Approach '{:>25}' took {:9.6f} ms (progressive costs: {:20.2f}).\n", name,
@@ -724,6 +759,7 @@ int main(int argc, char* argv[]) {
     // Write single line for "traditional" scan.
     csv_output_file << std::format("\"Traditional Hyrise Scan\",{},{},{}\n", measurement_id, expected_result_count,
                                    std::chrono::duration<int, std::nano>{expected_runtime_traditional_scan}.count());
+    std::cout << "\n";
   }
 
   csv_output_file.close();
