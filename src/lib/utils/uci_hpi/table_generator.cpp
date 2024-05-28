@@ -91,7 +91,7 @@ std::shared_ptr<Table> load_ny_taxi_data_to_table(std::string&& path) {
   }
 
   auto timer = Timer{};
-  ChunkEncoder::encode_all_chunks(final_table, SegmentEncodingSpec{EncodingType::Dictionary});
+  ChunkEncoder::encode_all_chunks(final_table, SegmentEncodingSpec{EncodingType::FixedStringDictionary});
   std::cerr << "Encoded table with " << final_table->row_count() << " rows in " << timer.lap_formatted() << ".\n";
 
   return final_table;
@@ -138,6 +138,14 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const DataDistribution scan_
          "Synthetic table should be at least 1M rows large. Not a hard requirement, "
          "but implicitly assumed in the following generation.");
   // We create a table that is manually filled in a way such that February dates are grouped somewhat together.
+  // All dates are in 2009, days are random. But every 1M rows, we have a high of February dates.
+  // TODO(Martin): write into pmr_vectors and create chunks afterwards. The current of  append() method is pretty slow.
+  //
+  const auto chunk_count = static_cast<size_t>(std::ceil(static_cast<double>(row_count) / Chunk::DEFAULT_SIZE));
+
+  // The table interface does not allow to pre-allocate chunks and later fill them. Thus, we first gather data in single
+  // chunks and then finally add the chunks to the table (just shared_ptr copying).
+  auto temporary_chunks = std::vector<std::shared_ptr<Chunk>>(chunk_count);
   for (auto row_id = size_t{0}; row_id < row_count; ++row_id) {
     const auto dist_to_1M =
         static_cast<double>(std::labs(static_cast<int64_t>(row_id % 1'000'000) - int64_t{500'000})) / 1'000'000.0;
@@ -153,7 +161,16 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const DataDistribution scan_
   std::cerr << "Generated table in " << timer.lap_formatted() << ".\n";
 
   table->last_chunk()->set_immutable();
-  ChunkEncoder::encode_all_chunks(table, SegmentEncodingSpec{EncodingType::Dictionary});
+  auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+  jobs.reserve(chunk_count);
+
+  for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
+    jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+      ChunkEncoder::encode_chunk(table->get_chunk(chunk_id), {DataType::String},
+                                 {SegmentEncodingSpec{EncodingType::Dictionary}});
+    }));
+  }
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
   std::cerr << "Encoded table with " << table->row_count() << " rows in " << timer.lap_formatted() << ".\n";
 
   return table;
