@@ -364,10 +364,7 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
     if ((double)rand() / RAND_MAX < exploration_factor) {
       arm = select_random_arm(num_arms);  // Explore
 
-    } else {
-      if ((double)rand() / RAND_MAX < exploration_factor) {
-        arm = select_random_arm(num_arms);  // Explore
-      } else {
+    }  else {
         arm = select_arm_with_highest_reward(rewards);  // Exploit
       }
     }
@@ -740,7 +737,7 @@ int main(int argc, char* argv[]) {
   auto csv_output_file = std::ofstream(csv_file_name);
   csv_output_file << "SCAN_TYPE,SCAN_ID,ROW_EMITTED,RUNTIME_NS\n";
 
-  const auto core_count_EE = cores_to_use == 0 ? size_t{10} : cores_to_use;
+  
 
   for (auto measurement_id = size_t{0}; measurement_id < MEASUREMENT_COUNT + 1; ++measurement_id) {
     const auto result_counts_and_timings_simple = benchmark_traditional_and_progressive_scan(table, predicate);
