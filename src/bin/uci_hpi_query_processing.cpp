@@ -77,6 +77,22 @@ AnalyzeResult analyze_and_write_results(const SizeRuntimeVector& results, size_t
   return result;
 }
 
+void export_match_distribution(const SizeRuntimeVector& results, const std::string& csv_file_name) {
+  /**
+   * Prepare CSV.
+   */
+  auto csv_output_file = std::ofstream(csv_file_name);
+  csv_output_file << "CHUNK_ID,ROW_COUNT\n";
+
+  auto chunk_id = ChunkID{0};
+  for (const auto& [result_count, runtime] : results) {
+    csv_output_file << chunk_id << "," << result_count << "\n";
+    ++chunk_id;
+  }
+
+  csv_output_file.close();
+}
+
 size_t scan_single_chunk_and_store_result(const auto& table, const auto& predicate, auto& results,
                                           const ChunkID chunk_id, const auto start) {
   // std::cerr << std::format("Scan chunk #{} (table has {} chunks)\n.", static_cast<size_t>(chunk_id), static_cast<size_t>(table->chunk_count()));
@@ -401,8 +417,8 @@ SizeRuntimeVector benchmark_traditional_and_progressive_scan(const auto& table, 
 
 SizeRuntimeVector perfect_scan(const auto& table, const auto& predicate) {
   auto result_counts_and_timings = benchmark_traditional_and_progressive_scan(table, predicate);
-  auto chunk_matches = std::vector<std::pair<ChunkID, size_t>>{};
 
+  auto chunk_matches = std::vector<std::pair<ChunkID, size_t>>{};
   const auto chunk_count = table->chunk_count();
   auto chunk_id = ChunkID{0};
   for (const auto& [result_count, runtime] : result_counts_and_timings) {
@@ -523,10 +539,14 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
       }
 
       // Used to check if exploiting is "worth it".
-      avg_result_tuples_per_chunk /= static_cast<float>(chunk_count);
+      avg_result_tuples_per_chunk /= static_cast<float>(local_chunks_processed);
 
-      for (auto loop_id = size_t{0}; global_chunks_processed < chunk_count; ++loop_id) {
-        if (loop_id % 2 == 0) {
+      // Incremented in explore phase or when exploiting seems to yield high reward chunks.
+      auto exploit_counter = size_t{0};
+      while (global_chunks_processed < chunk_count) {
+        if (exploit_counter == 0) {
+          // Increment for next round.
+          ++exploit_counter;
           // if (local_chunks_processed == local_chunks_to_process) {
           //   // Skip local processing if we have processed all local chunks.
           //   continue;
@@ -541,12 +561,11 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
               continue;
             }
 
-            debug_print(std::format("Worker {} does a local scan of chunk #{}.\n", static_cast<size_t>(worker_id),
-                                    static_cast<size_t>(chunk_id)));
-
             const auto row_count =
                 scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, chunk_id, start);
             queue.emplace(chunk_id, row_count);
+            debug_print(std::format("Worker {} did a local scan of chunk #{} with {} matches.\n", static_cast<size_t>(worker_id),
+                                    static_cast<size_t>(chunk_id), row_count));
             ++local_chunks_processed;
             ++global_chunks_processed;
 
@@ -585,15 +604,17 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
                 continue;
               }
 
-              debug_print(std::format("Worker {} does a stealing scan of chunk #{}.\n", static_cast<size_t>(worker_id),
-                                      static_cast<size_t>(next_chunk_id)));
               const auto row_count =
                   scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, next_chunk_id, start);
               queue.emplace(next_chunk_id, row_count);
+              debug_print(std::format("Worker {} did a stealing scan of chunk #{} with {} matches.\n", static_cast<size_t>(worker_id),
+                                      static_cast<size_t>(next_chunk_id), row_count));
               ++global_chunks_processed;
             }
           }
         } else {
+          --exploit_counter;
+
           // Pick from global queue.
           auto best_processed_chunk = std::pair<ChunkID, size_t>{};
           if (queue.try_pop(best_processed_chunk)) {
@@ -608,18 +629,24 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
               auto bool_false_tmp = false;
               auto exchanged = processed_chunks[chunk_id_to_test].compare_exchange_strong(bool_false_tmp, bool_true);
               if (exchanged) {
-                debug_print(std::format("Worker {} does an exploit scan of chunk #{}.\n",
-                                        static_cast<size_t>(worker_id), chunk_id_to_test));
                 const auto row_count_exploiting = scan_single_chunk_and_store_result(
                     table, predicate, result_counts_and_timings,
                     ChunkID{static_cast<ChunkID::base_type>(chunk_id_to_test)}, start);
                 queue.emplace(chunk_id_to_test, row_count_exploiting);
+                debug_print(std::format("Worker {} did an exploit scan of chunk #{} with {} matches.\n",
+                                        static_cast<size_t>(worker_id), chunk_id_to_test, row_count_exploiting));
                 ++global_chunks_processed;
 
                 if (chunk_id_to_test >= start_chunk_id && chunk_id_to_test <= end_chunk_id) {
                   // Track if exploited chunk is local chunk. To start chunk stealing, we first want to proceed all of
                   // our local chunks.
                   ++local_chunks_processed;
+                }
+
+                if (static_cast<float>(row_count_exploiting) / 1.5 > avg_result_tuples_per_chunk) {
+                  ++exploit_counter;
+                  debug_print(std::format("Worker {} increased exploit_counter to {} (avg: {}, last: {}).\n", static_cast<size_t>(worker_id),
+                                    exploit_counter, avg_result_tuples_per_chunk, row_count_exploiting));
                 }
               }
             }
@@ -672,21 +699,22 @@ int main(int argc, char* argv[]) {
   /**
    * Load data.
    */
+  auto row_count = size_t{100'000'000};
+  // auto row_count = size_t{1'000'000};
+
   auto benchmark_data_str = parsed_options["benchmark_data"].as<std::string>();
   boost::algorithm::to_lower(benchmark_data_str);
   if (benchmark_data_str == "taxi") {
     Hyrise::get().storage_manager.add_table("benchmark_data", uci_hpi::load_ny_taxi_data_to_table("full"));
-    // Hyrise::get().storage_manager.add_table("benchmark_data", uci_hpi::load_ny_taxi_data_to_table("1000"));
   } else if (benchmark_data_str == "synthetic") {
     Hyrise::get().storage_manager.add_table(
-        "benchmark_data", uci_hpi::load_synthetic_data_to_table(uci_hpi::DataDistribution::EqualWaves, 100'000'000));
-    // Hyrise::get().storage_manager.add_table(
-    //     "benchmark_data", uci_hpi::load_synthetic_data_to_table(uci_hpi::DataDistribution::EqualWaves, 10'000'000));
+        "benchmark_data", uci_hpi::load_synthetic_data_to_table(uci_hpi::DataDistribution::EqualWaves, row_count));
   } else {
     Fail("Unexpected value for 'benchmark_data'.");
   }
 
   Assert(Hyrise::get().storage_manager.has_table("benchmark_data"), "Benchmark data not loaded correctly.");
+  row_count = Hyrise::get().storage_manager.get_table("benchmark_data")->row_count();
 
   const auto table = Hyrise::get().storage_manager.get_table("benchmark_data");
   const auto column_id = table->column_id_by_name("Trip_Pickup_DateTime");
@@ -712,9 +740,13 @@ int main(int argc, char* argv[]) {
     auto result_counts_and_timings_EEM = ExploreExploitModular(table, predicate, core_count_EE);
     auto result_counts_and_timings_perfect = perfect_scan(table, predicate);
 
-    // First run is warmup (or we only have one run for debug reasons).
-    if (MEASUREMENT_COUNT > 1 && measurement_id == 0) {
-      continue;
+    if (measurement_id == 0) {
+      export_match_distribution(result_counts_and_timings_simple, std::string{"match_distribution__EqualWaves__" + std::to_string(row_count) + "_rows.csv"});
+
+      // First run is warmup and thus skipped, unless we only have one run for debug reasons.
+      if (MEASUREMENT_COUNT > 1) {
+        continue;
+      }
     }
 
     const auto print_result = [](std::string name, size_t runtime_ns, double progressive_costs) {
@@ -760,6 +792,10 @@ int main(int argc, char* argv[]) {
     csv_output_file << std::format("\"Traditional Hyrise Scan\",{},{},{}\n", measurement_id, expected_result_count,
                                    std::chrono::duration<int, std::nano>{expected_runtime_traditional_scan}.count());
     std::cout << "\n";
+
+    if (MEASUREMENT_COUNT == 1) {
+      break;  // One run for debugging, stpp after first round.
+    }
   }
 
   csv_output_file.close();
