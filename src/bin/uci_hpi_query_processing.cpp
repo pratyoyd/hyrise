@@ -255,39 +255,11 @@ SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate, const
   return result_counts_and_timings;
 }
 
-auto pull_arm_EEM(int arm, const auto table, auto &jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
+auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
                   auto predicate, auto& result_counts_and_timings_EEM, std::vector<int>& counts,
                   std::vector<double>& rewards, auto& i, auto start, int num_arms, auto chunk_count,
                   const auto& core_count) {
-  // This is the actual scan for EEM
-
-  // auto reward = int64_t{};
-  // auto chunk_id = ChunkID{next_to_explore[arm]};
-  // // std::cout << chunk_id << " ";
-  // if (ChunkID{next_to_explore[arm]} >= chunk_count) {
-  //   reward = -1;
-  //   return reward;
-  // } else {
-  //   jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
-  //     // We construct an intermediate table that only holds a single chunk as the table scan expects a table as the input.
-  //     auto single_chunk_vector = std::vector{progressive::recreate_non_const_chunk(table->get_chunk(chunk_id))};
-
-  //     auto single_chunk_table =
-  //         std::make_shared<Table>(table->column_definitions(), TableType::Data, std::move(single_chunk_vector));
-  //     auto table_wrapper = std::make_shared<TableWrapper>(single_chunk_table);
-  //     table_wrapper->execute();
-
-  //     auto table_scan = std::make_shared<TableScan>(table_wrapper, predicate);
-  //     table_scan->execute();
-
-  //     reward = table_scan->get_output()->row_count();
-  //   }));
-  //   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
-  // }
-
-  // chunk_id += num_partitions;
-
-  // next_to_explore[arm] = chunk_id;
+  
 
   auto reward = int64_t{};
   auto chunk_id = ChunkID{next_to_explore[arm]};
