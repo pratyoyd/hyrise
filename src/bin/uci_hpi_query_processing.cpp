@@ -255,7 +255,7 @@ SizeRuntimeVector ExploreExploit(const auto& table, const auto& predicate, const
   return result_counts_and_timings;
 }
 
-auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
+auto pull_arm_EEM(int arm, const auto table, auto &jobs, std::vector<int>& next_to_explore, auto partition_start_and_end,
                   auto predicate, auto& result_counts_and_timings_EEM, std::vector<int>& counts,
                   std::vector<double>& rewards, auto& i, auto start, int num_arms, auto chunk_count,
                   const auto& core_count) {
@@ -310,7 +310,7 @@ auto pull_arm_EEM(int arm, const auto table, auto jobs, std::vector<int>& next_t
       cores_iterator++;
       next_to_explore[arm] = chunk_id;
     }
-    Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+   Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
   }
 
   return reward;
@@ -325,8 +325,8 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
 
   //  This is the implementation of the  2nd explore-exploit scan. This partitions the data "modularly". Firstly we try a naive explore-exploit with 5 partitions.
   //  We will try to give more precedence to explore initially and exploit later on.
-  auto num_arms = size_t{15};
-  auto exploration_factor = double{0.2};
+  auto num_arms = size_t{61};
+  auto exploration_factor = double{0.42};
   auto rewards = std::vector<double>(num_arms, 0.0);
   auto counts = std::vector<int>(num_arms, 0);
   auto next_to_explore = std::vector<int>(num_arms, 0);
@@ -356,8 +356,14 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
   while (end == false) {
     auto arm = int32_t{};
     // std::cout<<" "<<num_arms<<" ";
-    if (i < 15) {
-      arm = i;  //explore each arm initially
+
+    if(i < 1){
+      arm =i;   //explore each arm initially
+    }
+    else{
+    if ((double)rand() / RAND_MAX < exploration_factor) {
+      arm = select_random_arm(num_arms);  // Explore
+
     } else {
       if ((double)rand() / RAND_MAX < exploration_factor) {
         arm = select_random_arm(num_arms);  // Explore
@@ -388,6 +394,7 @@ SizeRuntimeVector ExploreExploitModular(const auto& table, const auto& predicate
       }
     }
   }
+  //Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
 
   return result_counts_and_timings;
 }
@@ -725,7 +732,10 @@ int main(int argc, char* argv[]) {
    * Prepare CSV.
    */
   const auto core_count = cores_to_use == 0 ? std::thread::hardware_concurrency() : cores_to_use;
+
+  auto core_count_EE = cores_to_use == 0 ? size_t{10} : cores_to_use;
   auto csv_file_name = std::string{"progressive_scan__"} + std::to_string(core_count) + "_cores__";
+
   csv_file_name += benchmark_data_str + "__" + std::to_string(MEASUREMENT_COUNT) + "_runs.csv";
   auto csv_output_file = std::ofstream(csv_file_name);
   csv_output_file << "SCAN_TYPE,SCAN_ID,ROW_EMITTED,RUNTIME_NS\n";
