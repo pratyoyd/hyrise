@@ -23,6 +23,7 @@
 #include "scheduler/job_task.hpp"
 #include "scheduler/node_queue_scheduler.hpp"
 #include "storage/chunk_encoder.hpp"
+#include "storage/mvcc_data.hpp"
 #include "storage/table.hpp"
 #include "types.hpp"
 #include "utils/load_table.hpp"
@@ -120,13 +121,6 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const DataDistribution scan_
                                       {"Tolls_Amt", "float", true},
                                       {"Total_Amt", "float", true}}};
 
-  const auto table_column_definitions = TableColumnDefinitions{{"Trip_Pickup_DateTime", DataType::String, true}};
-  auto table = std::make_shared<Table>(table_column_definitions, TableType::Data, Chunk::DEFAULT_SIZE, UseMvcc::Yes);
-
-  auto random_engine = std::ranlux24_base{};
-  auto months_distribution = std::uniform_int_distribution<uint16_t>{3, 14};
-  auto days_distribution = std::uniform_int_distribution<uint16_t>{1, 28};
-  auto real_distribution = std::uniform_real_distribution<float>{0.0, 1.0};
 
   std::cerr << "Generating synthetic data table with " << row_count << " rows.\n";
   auto timer = Timer{};
@@ -137,40 +131,63 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const DataDistribution scan_
   Assert(row_count >= 10'000'000,
          "Synthetic table should be at least 1M rows large. Not a hard requirement, "
          "but implicitly assumed in the following generation.");
+
   // We create a table that is manually filled in a way such that February dates are grouped somewhat together.
   // All dates are in 2009, days are random. But every 1M rows, we have a high of February dates.
-  // TODO(Martin): write into pmr_vectors and create chunks afterwards. The current of  append() method is pretty slow.
-  //
   const auto chunk_count = static_cast<size_t>(std::ceil(static_cast<double>(row_count) / Chunk::DEFAULT_SIZE));
+  auto table_generation_jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+  table_generation_jobs.reserve(chunk_count);
 
   // The table interface does not allow to pre-allocate chunks and later fill them. Thus, we first gather data in single
   // chunks and then finally add the chunks to the table (just shared_ptr copying).
   auto temporary_chunks = std::vector<std::shared_ptr<Chunk>>(chunk_count);
-  for (auto row_id = size_t{0}; row_id < row_count; ++row_id) {
-    const auto dist_to_1M =
-        static_cast<double>(std::labs(static_cast<int64_t>(row_id % 1'000'000) - int64_t{500'000})) / 1'000'000.0;
-    const auto p_february = 1.4 * std::pow(dist_to_1M, 3);  // probability of month being February
-    auto month = 2;
-    if (real_distribution(random_engine) > p_february) {
-      month = months_distribution(random_engine) % 13;
-    }
-    auto date = pmr_string{"2009-"};
-    date += std::format("{:02}-{:02}", month, days_distribution(random_engine));
-    table->append({AllTypeVariant{date}});
-  }
-  std::cerr << "Generated table in " << timer.lap_formatted() << ".\n";
-
-  table->last_chunk()->set_immutable();
-  auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
-  jobs.reserve(chunk_count);
 
   for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
-    jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+    table_generation_jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
+      auto random_engine = std::ranlux24_base{};
+      auto months_distribution = std::uniform_int_distribution<uint16_t>{3, 14};
+      auto days_distribution = std::uniform_int_distribution<uint16_t>{1, 28};
+      auto real_distribution = std::uniform_real_distribution<float>{0.0, 1.0};
+
+      const auto start_row_id = size_t{chunk_id * Chunk::DEFAULT_SIZE};
+      const auto end_row_id = std::min(row_count, start_row_id + Chunk::DEFAULT_SIZE);
+      auto data = pmr_vector<pmr_string>{};
+      data.reserve(end_row_id - start_row_id);
+      for (auto row_id = start_row_id; row_id < end_row_id; ++row_id) {
+        const auto dist_to_1M =
+            static_cast<double>(std::labs(static_cast<int64_t>(row_id % 1'000'000) - int64_t{500'000})) / 1'000'000.0;
+        const auto p_february = 1.4 * std::pow(dist_to_1M, 3);  // probability of month being February
+        auto month = uint16_t{2};
+        if (real_distribution(random_engine) > p_february) {
+          month = months_distribution(random_engine) % 13;
+        }
+        data.emplace_back(pmr_string{std::format("2009-{:02}-{:02}", month, days_distribution(random_engine))});
+      }
+
+      auto segments = pmr_vector<std::shared_ptr<AbstractSegment>>{std::make_shared<ValueSegment<pmr_string>>(std::move(data))};
+      auto mvcc_data = std::make_shared<MvccData>(Chunk::DEFAULT_SIZE, CommitID{0});
+      auto chunk = std::make_shared<Chunk>(segments, mvcc_data);
+      chunk->set_immutable();
+      temporary_chunks[chunk_id] = chunk;
+    }));
+  }
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(table_generation_jobs);
+
+  const auto table_column_definitions = TableColumnDefinitions{{"Trip_Pickup_DateTime", DataType::String, true}};
+  auto table = std::make_shared<Table>(table_column_definitions, TableType::Data, temporary_chunks, UseMvcc::Yes);
+
+  std::cerr << "Generated table in " << timer.lap_formatted() << ".\n";
+
+  auto encoding_jobs = std::vector<std::shared_ptr<AbstractTask>>{};
+  encoding_jobs.reserve(chunk_count);
+
+  for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
+    encoding_jobs.emplace_back(std::make_shared<JobTask>([&, chunk_id]() {
       ChunkEncoder::encode_chunk(table->get_chunk(chunk_id), {DataType::String},
                                  {SegmentEncodingSpec{EncodingType::Dictionary}});
     }));
   }
-  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(jobs);
+  Hyrise::get().scheduler()->schedule_and_wait_for_tasks(encoding_jobs);
   std::cerr << "Encoded table with " << table->row_count() << " rows in " << timer.lap_formatted() << ".\n";
 
   return table;
