@@ -41,6 +41,15 @@ constexpr auto MEASUREMENT_COUNT = size_t{10};
 constexpr auto DEBUG_PRINT = false;
 // constexpr auto DEBUG_PRINT = true;
 
+void debug_print (std::string&& print_string) {
+    if constexpr (!DEBUG_PRINT) {
+      return;
+    }
+
+    std::cout << print_string;
+  };
+
+
 using SizeRuntimeVector = std::vector<std::pair<size_t, std::chrono::nanoseconds>>;
 
 class compare_pair_second {
@@ -436,14 +445,7 @@ SizeRuntimeVector perfect_scan(const auto& table, const auto& predicate) {
  *       atomic bools to atomically check if we are the first to process the chunk
  */
 SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const auto& predicate) {
-  auto debug_print = [](std::string&& print_string) {
-    if constexpr (!DEBUG_PRINT) {
-      return;
-    }
-
-    std::cout << print_string;
-  };
-
+  
   // const auto row_count = table->row_count();
   const auto chunk_count = table->chunk_count();
   auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
