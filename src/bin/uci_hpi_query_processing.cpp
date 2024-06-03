@@ -36,7 +36,8 @@
 namespace {
 
 using namespace hyrise;
-constexpr auto MEASUREMENT_COUNT = size_t{10};
+constexpr auto MEASUREMENT_COUNT = size_t{100};
+// constexpr auto MEASUREMENT_COUNT = size_t{10};
 // constexpr auto MEASUREMENT_COUNT = size_t{1};
 constexpr auto DEBUG_PRINT = false;
 // constexpr auto DEBUG_PRINT = true;
@@ -78,11 +79,10 @@ AnalyzeResult analyze_and_write_results(const SizeRuntimeVector& results, size_t
 }
 
 void export_match_distribution(const SizeRuntimeVector& results, const std::string& csv_file_name) {
-  /**
-   * Prepare CSV.
-   */
+  std::cout << "Writing match distribution to '" << csv_file_name << "'\n";
+
   auto csv_output_file = std::ofstream(csv_file_name);
-  csv_output_file << "CHUNK_ID,ROW_COUNT\n";
+  csv_output_file << "CHUNK_ID,MATCH_COUNT\n";
 
   auto chunk_id = ChunkID{0};
   for (const auto& [result_count, runtime] : results) {
@@ -459,7 +459,8 @@ SizeRuntimeVector perfect_scan(const auto& table, const auto& predicate) {
  *     - as exploiting and stealing might work on chunks other workers have already processed, we use a vector of
  *       atomic bools to atomically check if we are the first to process the chunk
  */
-SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const auto& predicate) {
+SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const auto& predicate,
+                                                    const size_t concurrent_worker_count) {
   auto debug_print = [](std::string&& print_string) {
     if constexpr (!DEBUG_PRINT) {
       return;
@@ -468,11 +469,8 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
     std::cout << print_string;
   };
 
-  // const auto row_count = table->row_count();
   const auto chunk_count = table->chunk_count();
   auto result_counts_and_timings = SizeRuntimeVector(chunk_count);
-
-  const auto concurrent_worker_count = Hyrise::get().topology.num_cpus();
 
   auto jobs = std::vector<std::shared_ptr<AbstractTask>>{};
   jobs.reserve(concurrent_worker_count);
@@ -485,23 +483,25 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
   auto queue = tbb::concurrent_priority_queue<std::pair<ChunkID, size_t>, compare_pair_second>{};
 
   auto global_chunks_processed = std::atomic<uint32_t>{0};
-
-  // auto random_device = std::random_device{};
-  // auto random_engine = std::default_random_engine{random_device()};
-  auto random_engine = std::default_random_engine{18};  // For debugging.
-  auto sampling_distribution = std::uniform_int_distribution<uint32_t>(0, chunks_per_worker);
-  auto stealing_distribution = std::uniform_int_distribution<uint32_t>(0, chunk_count - 1);
-
   const auto start = std::chrono::system_clock::now();
 
   for (auto worker_id = size_t{0}; worker_id < concurrent_worker_count; ++worker_id) {
     jobs.emplace_back(std::make_shared<JobTask>([&, worker_id]() {
+      // auto random_device = std::random_device{};
+      // auto random_engine = std::default_random_engine{random_device()};
+      auto random_engine = std::default_random_engine{18};  // For debugging.
+      auto sampling_distribution = std::uniform_int_distribution<uint32_t>(0, chunks_per_worker);
+      auto stealing_distribution = std::uniform_int_distribution<uint32_t>(0, chunk_count - 1);
+
       const auto start_chunk_id = ChunkID{worker_id * chunks_per_worker};
       const auto end_chunk_id = ChunkID{
           static_cast<ChunkID::base_type>(std::min(size_t{chunk_count - 1}, (worker_id + 1) * chunks_per_worker - 1))};
       const auto local_chunks_to_process = end_chunk_id - start_chunk_id + 1;
       auto max_consecutive_steal_attempts = size_t{2};
       auto scan_start = start_chunk_id;  // Updated counter to avoid checking all local chunks over and over again.
+
+      debug_print(std::format("Worker {} has assigned chunks: {:6} to {:6}.\n", static_cast<size_t>(worker_id),
+                              static_cast<size_t>(start_chunk_id), static_cast<size_t>(end_chunk_id)));
 
       auto sample_chunk_count =
           std::min(static_cast<size_t>(end_chunk_id - start_chunk_id), sample_chunk_count_per_worker);
@@ -564,8 +564,8 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
             const auto row_count =
                 scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, chunk_id, start);
             queue.emplace(chunk_id, row_count);
-            debug_print(std::format("Worker {} did a local scan of chunk #{} with {} matches.\n", static_cast<size_t>(worker_id),
-                                    static_cast<size_t>(chunk_id), row_count));
+            debug_print(std::format("Worker {} did a local scan of chunk #{} with {} matches.\n",
+                                    static_cast<size_t>(worker_id), static_cast<size_t>(chunk_id), row_count));
             ++local_chunks_processed;
             ++global_chunks_processed;
 
@@ -607,8 +607,8 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
               const auto row_count =
                   scan_single_chunk_and_store_result(table, predicate, result_counts_and_timings, next_chunk_id, start);
               queue.emplace(next_chunk_id, row_count);
-              debug_print(std::format("Worker {} did a stealing scan of chunk #{} with {} matches.\n", static_cast<size_t>(worker_id),
-                                      static_cast<size_t>(next_chunk_id), row_count));
+              debug_print(std::format("Worker {} did a stealing scan of chunk #{} with {} matches.\n",
+                                      static_cast<size_t>(worker_id), static_cast<size_t>(next_chunk_id), row_count));
               ++global_chunks_processed;
             }
           }
@@ -645,8 +645,9 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
 
                 if (static_cast<float>(row_count_exploiting) / 1.5 > avg_result_tuples_per_chunk) {
                   ++exploit_counter;
-                  debug_print(std::format("Worker {} increased exploit_counter to {} (avg: {}, last: {}).\n", static_cast<size_t>(worker_id),
-                                    exploit_counter, avg_result_tuples_per_chunk, row_count_exploiting));
+                  debug_print(std::format("Worker {} increased exploit_counter to {} (avg: {}, last: {}).\n",
+                                          static_cast<size_t>(worker_id), exploit_counter, avg_result_tuples_per_chunk,
+                                          row_count_exploiting));
                 }
               }
             }
@@ -728,20 +729,21 @@ int main(int argc, char* argv[]) {
   auto csv_file_name = std::string{"progressive_scan__"} + std::to_string(core_count) + "_cores__";
   csv_file_name += benchmark_data_str + "__" + std::to_string(MEASUREMENT_COUNT) + "_runs.csv";
   auto csv_output_file = std::ofstream(csv_file_name);
-  csv_output_file << "SCAN_TYPE,SCAN_ID,ROW_EMITTED,RUNTIME_NS\n";
+  csv_output_file << "SCAN_TYPE,SCAN_ID,ROWS_EMITTED,RUNTIME_NS\n";
 
   const auto core_count_EE = cores_to_use == 0 ? size_t{10} : cores_to_use;
 
   for (auto measurement_id = size_t{0}; measurement_id < MEASUREMENT_COUNT + 1; ++measurement_id) {
     const auto result_counts_and_timings_simple = benchmark_traditional_and_progressive_scan(table, predicate);
 
-    auto result_counts_and_timings_martin_prog = benchmark_progressive_martin_scan(table, predicate);
+    auto result_counts_and_timings_martin_prog = benchmark_progressive_martin_scan(table, predicate, core_count);
     auto result_counts_and_timings_EE = ExploreExploit(table, predicate, core_count_EE);
     auto result_counts_and_timings_EEM = ExploreExploitModular(table, predicate, core_count_EE);
     auto result_counts_and_timings_perfect = perfect_scan(table, predicate);
 
     if (measurement_id == 0) {
-      export_match_distribution(result_counts_and_timings_simple, std::string{"match_distribution__EqualWaves__" + std::to_string(row_count) + "_rows.csv"});
+      export_match_distribution(result_counts_and_timings_simple, std::string{"match_distribution__EqualWaves__" +
+                                                                              std::to_string(row_count) + "_rows.csv"});
 
       // First run is warmup and thus skipped, unless we only have one run for debug reasons.
       if (MEASUREMENT_COUNT > 1) {
@@ -751,7 +753,7 @@ int main(int argc, char* argv[]) {
 
     const auto print_result = [](std::string name, size_t runtime_ns, double progressive_costs) {
       std::cout << std::format("Approach '{:>25}' took {:9.6f} ms (progressive costs: {:20.2f}).\n", name,
-                               static_cast<double>(runtime_ns) / 1'000'1000, progressive_costs);
+                               static_cast<double>(runtime_ns) / 1'000'000, progressive_costs);
     };
 
     const auto simple_analyze_result = analyze_and_write_results(result_counts_and_timings_simple, measurement_id,
@@ -762,9 +764,8 @@ int main(int argc, char* argv[]) {
     print_result("Traditional Hyrise Scan", simple_analyze_result.overall_runtime_ns.count(),
                  static_cast<double>(simple_analyze_result.overall_runtime_ns.count()) *
                      static_cast<double>(simple_analyze_result.result_tuple_count));
-    std::cout << std::format("Approach '{:>25}' took {:9.6f} ms (progressive costs: {:20.2f}).\n", "Simple Progressive",
-                             static_cast<double>(simple_analyze_result.overall_runtime_ns.count()) / 1'000'1000,
-                             simple_analyze_result.progressive_costs);
+    print_result("Simple Progressive", simple_analyze_result.overall_runtime_ns.count(),
+                 simple_analyze_result.progressive_costs);
 
     // This is more or less for fun, right now. Above, we do the "traditional" table scan in Hyrise, but pretent that we
     // would immediately push "ready" chunks to the next pipeline operator. The "traditional" costs below assume that we
@@ -779,9 +780,7 @@ int main(int argc, char* argv[]) {
              {"Perfect Scan", result_counts_and_timings_perfect},
          }) {
       const auto analyze_result = analyze_and_write_results(results, measurement_id, name, csv_output_file);
-      std::cout << std::format("Approach '{:>25}' took {:9.6f} ms (progressive costs: {:20.2f}).\n", name,
-                               static_cast<double>(analyze_result.overall_runtime_ns.count()) / 1'000'1000,
-                               analyze_result.progressive_costs);
+      print_result(name, analyze_result.overall_runtime_ns.count(), analyze_result.progressive_costs);
       if (analyze_result.result_tuple_count != expected_result_count) {
         std::cerr << "ERROR: approach '" << name << "' yielded an expected result size of "
                   << analyze_result.result_tuple_count << " rows (expected " << expected_result_count << ").\n";

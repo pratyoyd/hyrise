@@ -121,7 +121,6 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const DataDistribution scan_
                                       {"Tolls_Amt", "float", true},
                                       {"Total_Amt", "float", true}}};
 
-
   std::cerr << "Generating synthetic data table with " << row_count << " rows.\n";
   auto timer = Timer{};
 
@@ -164,7 +163,8 @@ std::shared_ptr<Table> load_synthetic_data_to_table(const DataDistribution scan_
         data.emplace_back(pmr_string{std::format("2009-{:02}-{:02}", month, days_distribution(random_engine))});
       }
 
-      auto segments = pmr_vector<std::shared_ptr<AbstractSegment>>{std::make_shared<ValueSegment<pmr_string>>(std::move(data))};
+      auto segments =
+          pmr_vector<std::shared_ptr<AbstractSegment>>{std::make_shared<ValueSegment<pmr_string>>(std::move(data))};
       auto mvcc_data = std::make_shared<MvccData>(Chunk::DEFAULT_SIZE, CommitID{0});
       auto chunk = std::make_shared<Chunk>(segments, mvcc_data);
       chunk->set_immutable();
