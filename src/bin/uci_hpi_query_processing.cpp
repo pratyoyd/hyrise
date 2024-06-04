@@ -453,7 +453,7 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
 
   const auto chunks_per_worker =
       static_cast<size_t>(std::ceil(static_cast<double>(chunk_count) / static_cast<double>(concurrent_worker_count)));
-  const auto sample_chunk_count_per_worker = std::max(size_t{3}, chunks_per_worker / 20);
+  const auto sample_chunk_count_per_worker = std::max(size_t{3}, chunks_per_worker / 10);
 
   auto processed_chunks = std::vector<std::atomic_bool>(chunk_count);
   auto queue = tbb::concurrent_priority_queue<std::pair<ChunkID, size_t>, compare_pair_second>{};
@@ -551,12 +551,12 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
           }
 
           if (local_chunks_processed < local_chunks_to_process && scan_start < end_chunk_id) {
-            debug_print(
-                std::format("Worker {} does not steal, {} of {} local chunks processed (current scan start is {} and "
-                            "last local chunk id is {}).\n",
-                            static_cast<size_t>(worker_id), static_cast<size_t>(local_chunks_processed),
-                            static_cast<size_t>(local_chunks_to_process), static_cast<size_t>(scan_start),
-                            static_cast<size_t>(end_chunk_id)));
+            // debug_print(
+            //     std::format("Worker {} does not steal, {} of {} local chunks processed (current scan start is {} and "
+            //                 "last local chunk id is {}).\n",
+            //                 static_cast<size_t>(worker_id), static_cast<size_t>(local_chunks_processed),
+            //                 static_cast<size_t>(local_chunks_to_process), static_cast<size_t>(scan_start),
+            //                 static_cast<size_t>(end_chunk_id)));
             continue;
           }
 
@@ -619,7 +619,7 @@ SizeRuntimeVector benchmark_progressive_martin_scan(const auto& table, const aut
                   ++local_chunks_processed;
                 }
 
-                if (static_cast<float>(row_count_exploiting) / 1.5 > avg_result_tuples_per_chunk) {
+                if (static_cast<float>(row_count_exploiting) > avg_result_tuples_per_chunk) {
                   ++exploit_counter;
                   debug_print(std::format("Worker {} increased exploit_counter to {} (avg: {}, last: {}).\n",
                                           static_cast<size_t>(worker_id), exploit_counter, avg_result_tuples_per_chunk,
