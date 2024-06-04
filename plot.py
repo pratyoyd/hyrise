@@ -6,6 +6,7 @@
 ## First parameter is the CSV with distribution of matches, second is the CSV with runtimes.
 ##
 
+import math
 import matplotlib.pyplot as plt
 import os
 import pandas as pd
@@ -17,12 +18,12 @@ from matplotlib.gridspec import GridSpec
 from matplotlib import ticker
 
 
-def plot(data_distribution, runtimes, output_file_name):
+def plot(data_distribution, runtimes, output_file_name_suffix):
+  timestamp = int(time.time())
   sns.set_style("white")
 
-  dis_plot = sns.catplot(data_distribution, kind="bar", x="CHUNK_ID", y="MATCH_COUNT", color="red", height=5.0, aspect=10.0)
-  dis_fig = dis_plot._figure
-  dis_fig.savefig(f"progressive_plots/data_distribution.pdf") 
+  # just a helper
+  runtimes.insert(0, "ROW_ID", range(0, len(runtimes)))
 
   runtimes["RUNTIME_MS"] = runtimes["RUNTIME_NS"].astype(float) / 1000 / 1000
   runtimes["RUNTIME_S"] = runtimes["RUNTIME_MS"] / 1000
@@ -31,26 +32,54 @@ def plot(data_distribution, runtimes, output_file_name):
 
   runtimes["GROUP_KEY"] = runtimes.SCAN_TYPE + runtimes.SCAN_ID.astype(str)
 
-  # print("Plotting runtimes.")
-  # runtimes_plot = sns.relplot(runtimes, kind="line", x="RUNTIME_MS", y="CUMU_ROWS_EMITTED", units="GROUP_KEY", hue="SCAN_TYPE", estimator=None, height=10.0, aspect=5.0)
-  # runtimes_fig = runtimes_plot._figure
-  # runtimes_fig.savefig(f"progressive_plots/runtimes.pdf")
+  ##
+  ## Heat map bar chart: shows when chunk matches have been emitted
+  ##
+
+  scan_approach_count = len(pd.unique(runtimes.SCAN_TYPE)) - 1  # We don't plot the "traditional" Hyrise scan
+  run_id_to_plot = math.ceil(runtimes.SCAN_ID.max() / 2)
+
+  chunk_count_estimated = runtimes.groupby("SCAN_TYPE").count().max().ROW_ID / runtimes.SCAN_ID.max()
+  width = max(10, chunk_count_estimated / 1_000 * 20)
+  fig = plt.figure(constrained_layout=True, figsize=(width, 15))
+  grid_spec = fig.add_gridspec(scan_approach_count, 1)
+  axes = []
+  for approach_id in range(scan_approach_count):
+    axes.append(fig.add_subplot(grid_spec[approach_id]))
+
+  sns.set_context(rc = {'patch.linewidth': 0.0})
+
+  # We could probably use a FacetPlot here, but now it's too late.
+  for approach_id, approach_name in enumerate(pd.unique(runtimes.SCAN_TYPE)):
+    if "traditional" in approach_name.lower():
+      continue
+
+    df = runtimes.query("SCAN_TYPE == @approach_name and SCAN_ID == @run_id_to_plot").copy()
+    df = df.sort_values("ROW_ID")
+    df.insert(0, "CHUNK_ID", range(0, len(df)))
+    # df = df.query("CHUNK_ID <= 800")
+    sns.barplot(df, x="CHUNK_ID", y="ROWS_EMITTED", hue="RUNTIME_MS", palette="rocket", ax=axes[approach_id], width=0.95, legend=(approach_id == 0))
+    axes[approach_id].set_title(approach_name, fontdict={"fontweight": "bold"})
+    if approach_id == 0:
+      axes[approach_id].legend_.set_title("Runtime (ms)")
+    axes[approach_id].set_xlabel("Chunk ID")
+    axes[approach_id].set_ylabel("Rows Emitted")
+    axes[approach_id].xaxis.set_major_locator(plt.MaxNLocator(10))
+
+  fig.savefig(f"progressive_plots/time_of_rows_emitted__{output_file_name_suffix}__{timestamp}.pdf")
 
 
-  # print("Test plotting regressed runtimes.")
-  # lm_runtimes_plot = sns.lmplot(runtimes,  x="RUNTIME_MS", y="CUMU_ROWS_EMITTED", hue="SCAN_TYPE", order=2, height=10.0, aspect=5.0, scatter_kws={'alpha': 0.1})
-  # lm_runtimes_fig = lm_runtimes_plot._figure
-  # lm_runtimes_fig.savefig(f"progressive_plots/lm_runtimes.pdf")
-
-  # fig, axes = plt.subplots(ncols=2, nrows=3)
+  ##
+  ## Overview plot
+  ##
 
   fig = plt.figure(constrained_layout=True, figsize=(10, 12))
-  gs = fig.add_gridspec(4, 2, height_ratios=[2.0, 2.0, 0.5, 2.0])
-  ax1 = fig.add_subplot(gs[0, :])
-  ax2 = fig.add_subplot(gs[1, :])
-  ax3 = fig.add_subplot(gs[2, :])
-  ax4 = fig.add_subplot(gs[3, 0])
-  ax5 = fig.add_subplot(gs[3, 1])
+  grid_spec = fig.add_gridspec(4, 2, height_ratios=[2.0, 2.0, 0.5, 2.0])
+  ax1 = fig.add_subplot(grid_spec[0, :])
+  ax2 = fig.add_subplot(grid_spec[1, :])
+  ax3 = fig.add_subplot(grid_spec[2, :])
+  ax4 = fig.add_subplot(grid_spec[3, 0])
+  ax5 = fig.add_subplot(grid_spec[3, 1])
 
   plot_ax1 = sns.lineplot(runtimes, x="RUNTIME_MS", y="CUMU_ROWS_EMITTED", units="GROUP_KEY", hue="SCAN_TYPE", estimator=None, ax=ax1, alpha=0.8)
   plot_ax1.legend_.set_title(None)
@@ -82,12 +111,6 @@ def plot(data_distribution, runtimes, output_file_name):
   axis = 0
   for title, y, y_title, df, ax in [("Cost Metric: Progressive", "COSTS_PROGRESSIVE", "Costs", costs_progressive, ax4),
                            ("Cost Metric: Total Runtime (ms)", "RUNTIME_MS", "Runtime (ms)", costs_total, ax5)]:
-    # plot = sns.catplot(df, kind="box", x="SCAN_TYPE", y=y, hue="SCAN_TYPE", height=3.5, aspect=2.0)
-    # plot.set(title=title)
-    # plot.tick_params(axis="x", labelrotation=45)
-    # plot_fig = plot._figure
-    # plot_fig.savefig(f"progressive_plots/costs__{title.replace(' ', '_').lower()}.pdf")
-
     sns.boxplot(data=df, x="SCAN_TYPE", y=y, hue="SCAN_TYPE", ax=ax)
     ax.set_title(title, fontdict={"fontweight": "bold"})
     ax.tick_params("x", labelrotation=45)
@@ -96,9 +119,8 @@ def plot(data_distribution, runtimes, output_file_name):
     ax.xaxis.get_label().set_visible(False)
     ax.set_ylabel(y_title)
     axis += 1
-    
-  fig.tight_layout()
-  fig.savefig(f"progressive_plots/{output_file_name}__{int(time.time())}.pdf")
+
+  fig.savefig(f"progressive_plots/overview__{output_file_name_suffix}__{timestamp}.pdf")
   # fig.savefig(f"progressive_plots/overview.pdf")
 
 
@@ -106,9 +128,9 @@ if __name__ == '__main__':
     assert len(sys.argv) == 3, "Expected two arguments: (i) csv of match distributions and (ii) runtime measurements"
 
     input_file_name = sys.argv[2]
-    output_file_name = f"overview__{input_file_name[input_file_name.find('__')+2:input_file_name.rfind('.csv')]}"
+    output_file_name_suffix = f"{input_file_name[input_file_name.find('__')+2:input_file_name.rfind('.csv')]}"
 
     data_distribution = pd.read_csv(sys.argv[1])
     runtimes = pd.read_csv(input_file_name)
 
-    plot(data_distribution, runtimes, output_file_name)
+    plot(data_distribution, runtimes, output_file_name_suffix)
