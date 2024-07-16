@@ -51,12 +51,30 @@ pmr_vector<T> create_typed_segment_values(const std::vector<int>& values) {
 
 namespace hyrise {
 
-std::shared_ptr<Table> SyntheticTableGenerator::generate_table(const size_t num_columns, const size_t num_rows,
-                                                               const ChunkOffset chunk_size,
-                                                               const SegmentEncodingSpec segment_encoding_spec) const {
-  const auto column_specification = ColumnSpecification{
-      {ColumnDataDistribution::make_uniform_config(0.0, _max_different_value)}, DataType::Int, segment_encoding_spec};
-  return generate_table({num_columns, column_specification}, num_rows, chunk_size, UseMvcc::No);
+std::shared_ptr<Table> SyntheticTableGenerator::generate_table(
+    const size_t num_columns, const size_t num_rows, const ChunkOffset chunk_size,
+    const SegmentEncodingSpec segment_encoding_spec, const DataDistributionType data_distribution_type) const {
+  switch (data_distribution_type) {
+    case DataDistributionType::Uniform: {
+      return generate_table(
+          {num_columns, ColumnSpecification{{ColumnDataDistribution::make_uniform_config(0.0, _max_different_value)},
+                                            DataType::Int,
+                                            segment_encoding_spec}},
+          num_rows, chunk_size, UseMvcc::No);
+    }
+    case DataDistributionType::Pareto: {
+      return generate_table(
+          {num_columns,
+           ColumnSpecification{{ColumnDataDistribution::make_pareto_config()}, DataType::Int, segment_encoding_spec}},
+          num_rows, chunk_size, UseMvcc::No);
+    }
+    case DataDistributionType::NormalSkewed: {
+      return generate_table({num_columns, ColumnSpecification{{ColumnDataDistribution::make_skewed_normal_config()},
+                                                              DataType::Int,
+                                                              segment_encoding_spec}},
+                            num_rows, chunk_size, UseMvcc::No);
+    }
+  }
 }
 
 std::shared_ptr<Table> SyntheticTableGenerator::generate_table(

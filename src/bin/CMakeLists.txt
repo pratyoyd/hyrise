@@ -53,15 +53,26 @@ target_link_libraries(
     ncurses
 )
 
-# Configure Console
 add_executable(
     hyriseUCIHPI
 
     uci_hpi_query_processing.cpp
 )
 
+add_executable(
+    hyriseUCIHPIQueryRewriting
+
+    uci_hpi_query_rewriting.cpp
+)
+
 target_link_libraries(
     hyriseUCIHPI
+    hyrise
+    hyriseBenchmarkLib
+)
+
+target_link_libraries(
+    hyriseUCIHPIQueryRewriting
     hyrise
     hyriseBenchmarkLib
 )
