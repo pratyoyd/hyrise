@@ -33,6 +33,7 @@
 #include "insert_node.hpp"
 #include "join_node.hpp"
 #include "limit_node.hpp"
+#include "print_node.hpp"
 #include "null_value.hpp"
 #include "operators/aggregate_hash.hpp"
 #include "operators/alias_operator.hpp"

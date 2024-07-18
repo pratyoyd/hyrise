@@ -144,6 +144,7 @@ void validate_lqp_with_uncorrelated_subqueries(const std::shared_ptr<const Abstr
       case LQPNodeType::Insert:
       case LQPNodeType::Limit:
       case LQPNodeType::Predicate:
+      case LQPNodeType::Print:
       case LQPNodeType::Projection:
       case LQPNodeType::Root:
       case LQPNodeType::Sort:

@@ -1,4 +1,4 @@
-#include "sort_node.hpp"
+#include "print_node.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -16,16 +16,11 @@
 
 namespace hyrise {
 
-PrintNode::PrintNode(const std::vector<std::shared_ptr<AbstractExpression>>& expressions,
-                     const PrintFlags init_flags)
-    : AbstractLQPNode(LQPNodeType::Sort, expressions), flags(init_flags) {
-  Assert(expressions.size() == sort_modes.size(), "Expected as many Expressions as SortModes");
+PrintNode::PrintNode(const PrintFlags init_flags)
+    : AbstractLQPNode(LQPNodeType::Print), flags(init_flags) {
 }
 
 std::string PrintNode::description(const DescriptionMode mode) const {
-  const auto expression_mode = _expression_description_mode(mode);
-
-  auto stream = std::stringstream{};
   return std::string{"[Print]"};
 }
 
@@ -42,7 +37,7 @@ size_t PrintNode::_on_shallow_hash() const {
 }
 
 std::shared_ptr<AbstractLQPNode> PrintNode::_on_shallow_copy(LQPNodeMapping& node_mapping) const {
-  return PrintNode::make(expressions_copy_and_adapt_to_different_lqp(node_expressions, node_mapping), flags);
+  return PrintNode::make(flags);
 }
 
 bool PrintNode::_on_shallow_equals(const AbstractLQPNode& rhs, const LQPNodeMapping& node_mapping) const {

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "abstract_lqp_node.hpp"
+#include "operators/print.hpp"
 
 namespace hyrise {
 
@@ -13,8 +14,7 @@ namespace hyrise {
  */
 class PrintNode : public EnableMakeForLQPNode<PrintNode>, public AbstractLQPNode {
  public:
-  explicit PrintNode(const std::vector<std::shared_ptr<AbstractExpression>>& expressions,
-                     const PrintFlags init_flags);
+  explicit PrintNode(const PrintFlags init_flags);
 
   std::string description(const DescriptionMode mode = DescriptionMode::Short) const override;
 
