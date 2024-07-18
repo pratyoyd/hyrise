@@ -54,6 +54,7 @@
 #include "operators/maintenance/drop_view.hpp"
 #include "operators/operator_join_predicate.hpp"
 #include "operators/operator_scan_predicate.hpp"
+#include "operators/print.hpp"
 #include "operators/product.hpp"
 #include "operators/projection.hpp"
 #include "operators/sort.hpp"
@@ -149,6 +150,7 @@ std::shared_ptr<AbstractOperator> LQPTranslator::_translate_by_node_type(
     case LQPNodeType::Join:               return _translate_join_node(node);
     case LQPNodeType::Limit:              return _translate_limit_node(node);
     case LQPNodeType::Predicate:          return _translate_predicate_node(node);
+    case LQPNodeType::Print:              return _translate_print_node(node);
     case LQPNodeType::Projection:         return _translate_projection_node(node);
     case LQPNodeType::Sort:               return _translate_sort_node(node);
     case LQPNodeType::StaticTable:        return _translate_static_table_node(node);
@@ -456,6 +458,14 @@ std::shared_ptr<AbstractOperator> LQPTranslator::_translate_limit_node(
   auto limit_node = std::dynamic_pointer_cast<LimitNode>(node);
   return std::make_shared<Limit>(
       input_operator, _translate_expressions({limit_node->num_rows_expression()}, node->left_input()).front());
+}
+
+std::shared_ptr<AbstractOperator> LQPTranslator::_translate_print_node(
+    const std::shared_ptr<AbstractLQPNode>& node) const {
+  const auto input_operator = _translate_node_recursively(node->left_input());
+  auto print_node = std::dynamic_pointer_cast<PrintNode>(node);
+  return std::make_shared<Print>(
+      input_operator, print_node->flags);
 }
 
 std::shared_ptr<AbstractOperator> LQPTranslator::_translate_insert_node(

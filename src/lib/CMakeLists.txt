@@ -154,6 +154,8 @@ set(
     logical_query_plan/mock_node.hpp
     logical_query_plan/predicate_node.cpp
     logical_query_plan/predicate_node.hpp
+    logical_query_plan/print_node.cpp
+    logical_query_plan/print_node.hpp
     logical_query_plan/projection_node.cpp
     logical_query_plan/projection_node.hpp
     logical_query_plan/sort_node.cpp
@@ -436,6 +438,8 @@ set(
     statistics/statistics_objects/null_value_ratio_statistics.hpp
     statistics/statistics_objects/range_filter.cpp
     statistics/statistics_objects/range_filter.hpp
+    statistics/statistics_objects/scaled_histogram.cpp
+    statistics/statistics_objects/scaled_histogram.hpp
     statistics/table_statistics.cpp
     statistics/table_statistics.hpp
     storage/abstract_encoded_segment.hpp

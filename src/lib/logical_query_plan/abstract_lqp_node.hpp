@@ -34,6 +34,7 @@ enum class LQPNodeType {
   Join,
   Limit,
   Predicate,
+  Print,
   Projection,
   Root,
   Sort,

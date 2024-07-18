@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <boost/variant/get.hpp>
+#include <oneapi/tbb/concurrent_vector.h>  // NOLINT(build/include_order): cpplint identifies TBB as C system headers.
 
 #include "abstract_segment.hpp"
 #include "all_type_variant.hpp"
@@ -261,10 +262,10 @@ class Table : private Noncopyable {
 
   void _add_soft_order_constraint(const TableOrderConstraint& table_order_constraint);
 
-  const TableColumnDefinitions _column_definitions;
-  const TableType _type;
-  const UseMvcc _use_mvcc;
-  const ChunkOffset _target_chunk_size;
+  TableColumnDefinitions _column_definitions;
+  TableType _type;
+  UseMvcc _use_mvcc;
+  ChunkOffset _target_chunk_size;
 
   /**
    * To prevent data races for TableType::Data tables, we must access _chunks atomically.
@@ -289,8 +290,8 @@ class Table : private Noncopyable {
   ForeignKeyConstraints _referenced_foreign_key_constraints;
 
   std::vector<ColumnID> _value_clustered_by;
-  std::shared_ptr<TableStatistics> _table_statistics;
-  std::unique_ptr<std::mutex> _append_mutex;
+  std::shared_ptr<TableStatistics> _table_statistics{};
+  std::mutex _append_mutex{};
   std::vector<ChunkIndexStatistics> _chunk_indexes_statistics;
   std::vector<TableIndexStatistics> _table_indexes_statistics;
   pmr_vector<std::shared_ptr<PartialHashIndex>> _table_indexes;
